@@ -4,11 +4,11 @@
 /bin/
 
 # Profiles contain user credentials and must never be committed.
-/*.yaml
-/*.yml
-/configs/**/*.yaml
-/configs/**/*.yml
-/templates/**/*.yaml
-/templates/**/*.yml
+/*.[Yy][Aa][Mm][Ll]
+/*.[Yy][Mm][Ll]
+/configs/**/*.[Yy][Aa][Mm][Ll]
+/configs/**/*.[Yy][Mm][Ll]
+/templates/**/*.[Yy][Aa][Mm][Ll]
+/templates/**/*.[Yy][Mm][Ll]
 
 .DS_Store

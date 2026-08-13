@@ -8,6 +8,7 @@ typeset -gr PROJECT_ROOT="${SCRIPT_PATH:h}"
 typeset -gr STATE_DIR="${CLRS_STATE_DIR:-${PROJECT_ROOT}/.clrs}"
 typeset -gr STATE_FILE="${STATE_DIR}/state"
 typeset -gr SECRET_FILE="${STATE_DIR}/controller-secret"
+typeset -gr SYSTEM_PROXY_STATE_FILE="${STATE_DIR}/system-proxy-state"
 typeset -gr USER_SOCKET="${STATE_DIR}/tmux.sock"
 typeset -gr ROOT_SOCKET="${STATE_DIR}/tmux-root.sock"
 typeset -gr SESSION_NAME="clrs"
@@ -31,16 +32,29 @@ typeset -gr LSOF_BIN="${LSOF_BIN:-${commands[lsof]:-/usr/sbin/lsof}}"
 typeset -gr OPENSSL_BIN="${OPENSSL_BIN:-${commands[openssl]:-/usr/bin/openssl}}"
 typeset -gr OPEN_BIN="${OPEN_BIN:-${commands[open]:-/usr/bin/open}}"
 typeset -gr SUDO_BIN="${SUDO_BIN:-${commands[sudo]:-/usr/bin/sudo}}"
+typeset -gr NETWORKSETUP_BIN="${NETWORKSETUP_BIN:-${commands[networksetup]:-/usr/sbin/networksetup}}"
+typeset -gr SCUTIL_BIN="${SCUTIL_BIN:-${commands[scutil]:-/usr/sbin/scutil}}"
 
 typeset ACTIVE_PROFILE=""
 typeset ACTIVE_MODE=""
+typeset PROXY_SERVICE=""
+typeset PREVIOUS_HTTP_ENABLED=""
+typeset PREVIOUS_HTTP_SERVER=""
+typeset PREVIOUS_HTTP_PORT=""
+typeset PREVIOUS_HTTPS_ENABLED=""
+typeset PREVIOUS_HTTPS_SERVER=""
+typeset PREVIOUS_HTTPS_PORT=""
 
 usage() {
   cat <<'EOF'
 Usage:
-  clrs start --config JP|SG [--tun]
+  clrs start --config JP|SG [--tun] [--select]
   clrs stop
   clrs status
+  clrs select
+  clrs system-proxy on [--service NAME]
+  clrs system-proxy off
+  clrs system-proxy status
   clrs attach
   clrs logs
   clrs ui
@@ -49,6 +63,8 @@ Usage:
 Examples:
   clrs start --config JP
   clrs start --config SG
+  clrs start --config JP --select
+  clrs system-proxy on
   clrs start --config JP --tun
 
 Detach from tmux without stopping Clash RS: Ctrl-b, then d
@@ -154,6 +170,168 @@ prepare_secret() {
   "$OPENSSL_BIN" rand -hex 32 >| "$temporary_secret"
   chmod 600 "$temporary_secret"
   mv -f "$temporary_secret" "$SECRET_FILE"
+}
+
+proxy_field() {
+  local settings="$1"
+  local field="$2"
+  local line
+
+  while IFS= read -r line; do
+    [[ "$line" == "${field}: "* ]] || continue
+    print -r -- "${line#${field}: }"
+    return 0
+  done <<< "$settings"
+  return 1
+}
+
+read_system_proxy_state() {
+  [[ -s "$SYSTEM_PROXY_STATE_FILE" ]] || return 1
+  IFS='|' read -r PROXY_SERVICE \
+    PREVIOUS_HTTP_ENABLED PREVIOUS_HTTP_SERVER PREVIOUS_HTTP_PORT \
+    PREVIOUS_HTTPS_ENABLED PREVIOUS_HTTPS_SERVER PREVIOUS_HTTPS_PORT \
+    < "$SYSTEM_PROXY_STATE_FILE"
+  [[ -n "$PROXY_SERVICE" && "$PREVIOUS_HTTP_PORT" == <-> && \
+     "$PREVIOUS_HTTPS_PORT" == <-> ]] || die "invalid system proxy state"
+  [[ "$PREVIOUS_HTTP_ENABLED" == "Yes" || "$PREVIOUS_HTTP_ENABLED" == "No" ]] || \
+    die "invalid system proxy state"
+  [[ "$PREVIOUS_HTTPS_ENABLED" == "Yes" || "$PREVIOUS_HTTPS_ENABLED" == "No" ]] || \
+    die "invalid system proxy state"
+}
+
+save_system_proxy_state() {
+  [[ "$PROXY_SERVICE" != *'|'* && "$PREVIOUS_HTTP_SERVER" != *'|'* && \
+     "$PREVIOUS_HTTPS_SERVER" != *'|'* ]] || die "unsupported proxy state value"
+  print -r -- "${PROXY_SERVICE}|${PREVIOUS_HTTP_ENABLED}|${PREVIOUS_HTTP_SERVER}|${PREVIOUS_HTTP_PORT}|${PREVIOUS_HTTPS_ENABLED}|${PREVIOUS_HTTPS_SERVER}|${PREVIOUS_HTTPS_PORT}" \
+    >| "$SYSTEM_PROXY_STATE_FILE"
+  chmod 600 "$SYSTEM_PROXY_STATE_FILE"
+}
+
+proxy_is_rash() {
+  local http_settings
+  local https_settings
+  http_settings="$("$NETWORKSETUP_BIN" -getwebproxy "$1" 2>/dev/null)" || return 1
+  https_settings="$("$NETWORKSETUP_BIN" -getsecurewebproxy "$1" 2>/dev/null)" || return 1
+  [[ "$http_settings" == *$'Enabled: Yes\nServer: 127.0.0.1\nPort: 7890\n'* && \
+     "$https_settings" == *$'Enabled: Yes\nServer: 127.0.0.1\nPort: 7890\n'* ]]
+}
+
+effective_proxy_port() {
+  "$SCUTIL_BIN" --proxy | /usr/bin/awk '
+    /__SCOPED__/ { exit }
+    /HTTPEnable :/ { enabled = $3 }
+    /HTTPProxy :/ { host = $3 }
+    /HTTPPort :/ { port = $3 }
+    END { if (enabled == 1 && host == "127.0.0.1") print port }
+  '
+}
+
+restore_system_proxy() {
+  local http_state="off"
+  local https_state="off"
+  [[ -n "$PREVIOUS_HTTP_SERVER" ]] && \
+    "$NETWORKSETUP_BIN" -setwebproxy "$PROXY_SERVICE" \
+      "$PREVIOUS_HTTP_SERVER" "$PREVIOUS_HTTP_PORT"
+  [[ -n "$PREVIOUS_HTTPS_SERVER" ]] && \
+    "$NETWORKSETUP_BIN" -setsecurewebproxy "$PROXY_SERVICE" \
+      "$PREVIOUS_HTTPS_SERVER" "$PREVIOUS_HTTPS_PORT"
+  [[ "$PREVIOUS_HTTP_ENABLED" == "Yes" ]] && http_state="on"
+  [[ "$PREVIOUS_HTTPS_ENABLED" == "Yes" ]] && https_state="on"
+  "$NETWORKSETUP_BIN" -setwebproxystate "$PROXY_SERVICE" "$http_state"
+  "$NETWORKSETUP_BIN" -setsecurewebproxystate "$PROXY_SERVICE" "$https_state"
+}
+
+system_proxy_on() {
+  local service="${CLRS_NETWORK_SERVICE:-Wi-Fi}"
+  local http_settings
+  local https_settings
+
+  if (( $# > 0 )); then
+    [[ "$1" == "--service" && $# == 2 ]] || \
+      die "usage: clrs system-proxy on [--service NAME]"
+    service="$2"
+  fi
+  require_active_session
+  [[ "$ACTIVE_MODE" == "proxy" ]] || die "system-proxy is unnecessary in TUN mode"
+  if read_system_proxy_state; then
+    proxy_is_rash "$PROXY_SERVICE" || die "system proxy settings changed externally"
+    print -r -- "Rash system proxy is already on for $PROXY_SERVICE."
+    return 0
+  fi
+
+  http_settings="$("$NETWORKSETUP_BIN" -getwebproxy "$service")" || \
+    die "unknown macOS network service: $service"
+  https_settings="$("$NETWORKSETUP_BIN" -getsecurewebproxy "$service")"
+  [[ "$(proxy_field "$http_settings" "Authenticated Proxy Enabled")" == "0" && \
+     "$(proxy_field "$https_settings" "Authenticated Proxy Enabled")" == "0" ]] || \
+    die "authenticated system proxies are not supported"
+
+  PROXY_SERVICE="$service"
+  PREVIOUS_HTTP_ENABLED="$(proxy_field "$http_settings" "Enabled")"
+  PREVIOUS_HTTP_SERVER="$(proxy_field "$http_settings" "Server")"
+  PREVIOUS_HTTP_PORT="$(proxy_field "$http_settings" "Port")"
+  PREVIOUS_HTTPS_ENABLED="$(proxy_field "$https_settings" "Enabled")"
+  PREVIOUS_HTTPS_SERVER="$(proxy_field "$https_settings" "Server")"
+  PREVIOUS_HTTPS_PORT="$(proxy_field "$https_settings" "Port")"
+  save_system_proxy_state
+
+  if ! {
+    "$NETWORKSETUP_BIN" -setwebproxy "$service" 127.0.0.1 7890
+    "$NETWORKSETUP_BIN" -setsecurewebproxy "$service" 127.0.0.1 7890
+    "$NETWORKSETUP_BIN" -setwebproxystate "$service" on
+    "$NETWORKSETUP_BIN" -setsecurewebproxystate "$service" on
+  }; then
+    restore_system_proxy || true
+    rm -f -- "$SYSTEM_PROXY_STATE_FILE"
+    die "failed to enable the system proxy"
+  fi
+
+  print -r -- "Rash system proxy: on ($service, 127.0.0.1:7890)"
+  [[ "$(effective_proxy_port)" == "7890" ]] || \
+    print -u2 -r -- "clrs: another VPN or network extension is overriding it"
+}
+
+system_proxy_off() {
+  if ! read_system_proxy_state; then
+    print -r -- "Rash system proxy is already off."
+    return 0
+  fi
+  restore_system_proxy
+  rm -f -- "$SYSTEM_PROXY_STATE_FILE"
+  print -r -- "Rash system proxy: off (restored $PROXY_SERVICE)"
+}
+
+system_proxy_status() {
+  local status_code=0
+
+  if ! read_system_proxy_state; then
+    print -r -- "Rash system proxy: off"
+    status_code=1
+  else
+    proxy_is_rash "$PROXY_SERVICE" || die "system proxy settings changed externally"
+    print -r -- "Rash system proxy: on ($PROXY_SERVICE, 127.0.0.1:7890)"
+    [[ "$(effective_proxy_port)" == "7890" ]] || \
+      print -r -- "Effective system proxy: overridden by another VPN or network extension"
+  fi
+
+  if read_state && tmux_has_session "$ACTIVE_MODE"; then
+    show_runtime_connection
+  fi
+  return "$status_code"
+}
+
+system_proxy_command() {
+  local action="${1:-status}"
+  (( $# > 0 )) && shift
+  [[ "$(uname -s)" == "Darwin" ]] || die "system-proxy is only supported on macOS"
+  require_executable "$NETWORKSETUP_BIN" "networksetup"
+  require_executable "$SCUTIL_BIN" "scutil"
+  case "$action" in
+    on) system_proxy_on "$@" ;;
+    off) (( $# == 0 )) || die "system-proxy off takes no options"; system_proxy_off ;;
+    status) (( $# == 0 )) || die "system-proxy status takes no options"; system_proxy_status ;;
+    *) die "system-proxy requires on, off, or status" ;;
+  esac
 }
 
 render_runtime_config() {
@@ -263,9 +441,197 @@ wait_for_ui() {
   return 1
 }
 
+controller_get() {
+  local endpoint="$1"
+  local secret
+  secret="$(<"$SECRET_FILE")"
+  "$CURL_BIN" --fail --silent --show-error \
+    --header "Authorization: Bearer ${secret}" \
+    "${API_URL}${endpoint}"
+}
+
+url_encode() {
+  CLRS_URI_VALUE="$1" "$YQ_BIN" -n -r 'strenv(CLRS_URI_VALUE) | @uri' | \
+    /usr/bin/sed 's/+/\%20/g'
+}
+
+selector_rows() {
+  local proxies_json="$1"
+  print -r -- "$proxies_json" | "$YQ_BIN" -p=json -r '
+    .proxies | to_entries[] |
+    select(.value.type == "Selector" and .key != "GLOBAL") |
+    [.key, .value.now] | @tsv
+  '
+}
+
+show_selector_status() {
+  local proxies_json
+  local rows
+  local selector_name
+  local selected_name
+
+  if ! proxies_json="$(controller_get /proxies 2>/dev/null)"; then
+    print -r -- "Connection: controller unavailable"
+    return 0
+  fi
+  rows="$(selector_rows "$proxies_json")"
+  if [[ -z "$rows" ]]; then
+    print -r -- "Connection: no configured Selector group"
+    return 0
+  fi
+
+  while IFS=$'\t' read -r selector_name selected_name; do
+    print -r -- "Connection: ${selector_name} -> ${selected_name}"
+  done <<< "$rows"
+}
+
+show_runtime_connection() {
+  show_selector_status
+  if [[ "$ACTIVE_MODE" == "tun" ]]; then
+    if /sbin/ifconfig utun1989 >/dev/null 2>&1; then
+      print -r -- "TUN:        enabled (utun1989, route-all, DNS hijack)"
+    else
+      print -r -- "TUN:        configured, but utun1989 was not found"
+    fi
+  fi
+}
+
+measure_proxy_delay() {
+  local proxy_name="$1"
+  local encoded_name
+  local response
+  local response_body
+  local status_code
+  local delay
+
+  encoded_name="$(url_encode "$proxy_name")"
+  response="$("$CURL_BIN" --silent --show-error --get \
+    --header "Authorization: Bearer $(<"$SECRET_FILE")" \
+    --data-urlencode 'url=https://www.gstatic.com/generate_204' \
+    --data-urlencode 'timeout=5000' \
+    --max-time 8 \
+    --write-out $'\n%{http_code}' \
+    "${API_URL}/proxies/${encoded_name}/delay" 2>/dev/null || true)"
+  status_code="${response##*$'\n'}"
+  response_body="${response%$'\n'*}"
+
+  if [[ "$status_code" == "200" ]]; then
+    delay="$(print -r -- "$response_body" | "$YQ_BIN" -p=json -r '.delay // 0')"
+    if [[ "$delay" == <-> && "$delay" -gt 0 ]]; then
+      print -r -- "${delay} ms"
+      return 0
+    fi
+  fi
+  print -r -- "timeout"
+}
+
+choose_index() {
+  local prompt="$1"
+  local default_index="$2"
+  local maximum="$3"
+  local choice
+
+  print -u2 -n -r -- "${prompt} [${default_index}]: "
+  IFS= read -r choice
+  [[ -n "$choice" ]] || choice="$default_index"
+  [[ "$choice" == <-> && "$choice" -ge 1 && "$choice" -le "$maximum" ]] || \
+    die "selection must be a number from 1 to ${maximum}"
+  print -r -- "$choice"
+}
+
+select_proxy_interactive() {
+  local proxies_json
+  local rows
+  local selector_name
+  local selected_name
+  local choice
+  local index
+  local default_index=1
+  local member_name
+  local encoded_selector
+  local request_body
+  local confirmed_name
+  local result_file
+  local -a selector_names
+  local -a selector_currents
+  local -a members
+  local -a delays
+  local -a result_files
+  local -a delay_pids
+
+  require_active_session
+  [[ -t 0 ]] || die "select requires an interactive terminal"
+  proxies_json="$(controller_get /proxies)"
+  rows="$(selector_rows "$proxies_json")"
+  [[ -n "$rows" ]] || die "no configured Selector group was found"
+
+  while IFS=$'\t' read -r selector_name selected_name; do
+    selector_names+=("$selector_name")
+    selector_currents+=("$selected_name")
+  done <<< "$rows"
+
+  if (( ${#selector_names} > 1 )); then
+    print -r -- "Selector groups:"
+    for (( index = 1; index <= ${#selector_names}; index++ )); do
+      printf '  %d) %s -> %s\n' "$index" "${selector_names[$index]}" \
+        "${selector_currents[$index]}"
+    done
+    choice="$(choose_index "Choose Selector" 1 "${#selector_names}")"
+  else
+    choice=1
+  fi
+  selector_name="${selector_names[$choice]}"
+  selected_name="${selector_currents[$choice]}"
+  members=("${(@f)$(SELECTOR_NAME="$selector_name" print -r -- "$proxies_json" | \
+    SELECTOR_NAME="$selector_name" "$YQ_BIN" -p=json -r \
+      '.proxies[strenv(SELECTOR_NAME)].all[]')}")
+  (( ${#members} > 0 )) || die "Selector ${selector_name} has no members"
+
+  for (( index = 1; index <= ${#members}; index++ )); do
+    [[ "${members[$index]}" == "$selected_name" ]] && default_index="$index"
+    result_file="$(mktemp "${STATE_DIR}/delay.XXXXXX")"
+    result_files+=("$result_file")
+    measure_proxy_delay "${members[$index]}" >| "$result_file" &
+    delay_pids+=($!)
+  done
+  print -r -- "Testing ${selector_name} latency..."
+  for (( index = 1; index <= ${#delay_pids}; index++ )); do
+    wait "${delay_pids[$index]}" || true
+    delays+=("$(<"${result_files[$index]}")")
+    rm -f -- "${result_files[$index]}"
+  done
+
+  print -r -- "${selector_name} members (default/current: ${selected_name}):"
+  for (( index = 1; index <= ${#members}; index++ )); do
+    member_name="${members[$index]}"
+    if (( index == default_index )); then
+      printf '  %d) %-28s %8s  [default/current]\n' \
+        "$index" "$member_name" "${delays[$index]}"
+    else
+      printf '  %d) %-28s %8s\n' "$index" "$member_name" "${delays[$index]}"
+    fi
+  done
+  choice="$(choose_index "Choose proxy" "$default_index" "${#members}")"
+  member_name="${members[$choice]}"
+  encoded_selector="$(url_encode "$selector_name")"
+  request_body="$(CLRS_SELECTED_PROXY="$member_name" "$YQ_BIN" -n -o=json \
+    '{"name": strenv(CLRS_SELECTED_PROXY)}')"
+  "$CURL_BIN" --fail --silent --show-error --request PUT \
+    --header "Authorization: Bearer $(<"$SECRET_FILE")" \
+    --header 'Content-Type: application/json' \
+    --data "$request_body" \
+    "${API_URL}/proxies/${encoded_selector}" >/dev/null
+  confirmed_name="$(SELECTOR_NAME="$selector_name" controller_get /proxies | \
+    SELECTOR_NAME="$selector_name" "$YQ_BIN" -p=json -r \
+      '.proxies[strenv(SELECTOR_NAME)].now')"
+  [[ "$confirmed_name" == "$member_name" ]] || die "Controller did not apply the selection"
+  print -r -- "Selected: ${selector_name} -> ${confirmed_name}"
+}
+
 start_service() {
   local profile=""
   local mode="proxy"
+  local prompt_for_selector="false"
   local runtime_config
   local runtime_dir
   local command_line
@@ -285,6 +651,10 @@ start_service() {
         mode="tun"
         shift
         ;;
+      --select)
+        prompt_for_selector="true"
+        shift
+        ;;
       -h|--help)
         usage
         return 0
@@ -294,6 +664,8 @@ start_service() {
   done
 
   [[ -n "$profile" ]] || die "start requires --config JP or --config SG"
+  [[ "$prompt_for_selector" != "true" || -t 0 ]] || \
+    die "--select requires an interactive terminal"
   [[ "$mode" != "tun" || "$(uname -s)" == "Darwin" ]] || \
     die "this --tun preset is currently configured for macOS"
 
@@ -340,12 +712,19 @@ start_service() {
   if ! wait_for_ui; then
     print -u2 -r -- "Yacd is still downloading; run 'clrs logs' or retry the UI shortly."
   fi
+
+  if [[ "$prompt_for_selector" == "true" ]]; then
+    select_proxy_interactive
+  else
+    show_runtime_connection
+  fi
 }
 
 stop_service() {
   local attempt
 
   prepare_state_dir
+  [[ -s "$SYSTEM_PROXY_STATE_FILE" ]] && system_proxy_off
   if ! read_state; then
     print -r -- "Clash RS is not running."
     return 0
@@ -387,6 +766,7 @@ status_service() {
   print -r -- "Proxy:    http://127.0.0.1:7890"
   print -r -- "Yacd:     $UI_URL"
   print -r -- "Session:  $SESSION_NAME"
+  show_runtime_connection
 }
 
 require_active_session() {
@@ -433,6 +813,8 @@ main() {
     start) start_service "$@" ;;
     stop) stop_service "$@" ;;
     status) status_service "$@" ;;
+    select) (( $# == 0 )) || die "select takes no options"; select_proxy_interactive ;;
+    system-proxy) system_proxy_command "$@" ;;
     attach) attach_service "$@" ;;
     logs) show_logs "$@" ;;
     ui) open_ui "$@" ;;

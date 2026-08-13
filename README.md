@@ -91,7 +91,13 @@ ln -sfn "$PWD/clrs" ~/.local/bin/clrs
 ```zsh
 clrs start --config JP
 clrs start --config SG
+clrs start --config JP --select
 clrs start --config JP --tun
+
+clrs select
+clrs system-proxy on
+clrs system-proxy status
+clrs system-proxy off
 
 clrs status
 clrs logs
@@ -101,12 +107,32 @@ clrs secret
 clrs stop
 ```
 
-Regular mode does not alter macOS proxy settings. Point applications or the
-macOS system proxy at `127.0.0.1:7890` when needed.
+Starting regular mode does not alter macOS proxy settings. Point applications
+at `127.0.0.1:7890` when needed, or use the `system-proxy` switch. It does this
+for the `Wi-Fi` network service and restores its previous HTTP/HTTPS
+settings when turned off or when `clrs stop` runs. For another service, use
+`clrs system-proxy on --service "USB 10/100/1000 LAN"`.
+
+Another active proxy VPN or network extension can override this setting. In
+that case, `clrs system-proxy status` reports the override; stop the other
+proxy client before testing Rash.
+
+Add `--select` to choose a member of the configured Selector group during
+startup. Rash tests all candidates, marks the current/default member, and
+pressing Return keeps that default. Run `clrs select` to switch later. A Yacd
+selection is immediately reflected by both status commands:
+
+```text
+Connection: Proxy -> VPS-Reality
+```
+
+The selection is stored by Clash RS, so the current member—not necessarily the
+first configured member—becomes the next prompt's default.
 
 TUN mode is macOS-only in the current preset. It requests `sudo`, creates
 `utun1989`, uses `198.19.0.1/16` as its gateway, routes all traffic, and
-hijacks DNS. Stop it with `clrs stop` so Clash RS can remove routes cleanly.
+hijacks DNS. `clrs status` reports whether `utun1989` is active. Stop it with
+`clrs stop` so Clash RS can remove routes cleanly.
 
 `clrs attach` opens the tmux session. Detach without stopping it by pressing
 `Ctrl-b`, then `d`. If Clash RS exits unexpectedly, the session stays open so

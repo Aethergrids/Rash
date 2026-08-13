@@ -1,0 +1,54 @@
+# Clash RS starter profile for Rash.
+#
+# Copy this file to configs/<PROFILE>/config.yaml, then replace or add the
+# user's real proxies. Never commit the resulting YAML file.
+
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: warning
+
+# clrs injects the loopback controller, Yacd path, and a random secret into a
+# private runtime copy. Keep those values out of reusable profile files.
+profile:
+  store-selected: true
+
+dns:
+  enable: true
+  listen: "127.0.0.1:1053"
+  ipv6: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+
+# Add the user's actual outbound definitions here. Never invent or publish
+# servers, UUIDs, passwords, keys, certificates, or provider URLs.
+proxies: []
+
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - DIRECT
+
+rules:
+  # Keep both LinkedIn domains ahead of broad CN/direct rules. Clash routes
+  # traffic; it cannot perform an HTTP redirect from linkedin.cn to .com.
+  - DOMAIN-SUFFIX,linkedin.com,Proxy
+  - DOMAIN-SUFFIX,linkedin.cn,Proxy
+  - DOMAIN-SUFFIX,local,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - GEOIP,CN,DIRECT
+  - MATCH,Proxy

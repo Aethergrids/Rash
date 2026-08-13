@@ -1,0 +1,266 @@
+#!/bin/zsh
+
+set -eu
+setopt pipe_fail
+
+typeset -gr SCRIPT_PATH="${0:A}"
+typeset -gr PROJECT_ROOT="${SCRIPT_PATH:h:h}"
+typeset -gr DEFAULT_RASH_RELEASE_VERSION="v1.0.0"
+typeset -gr DEFAULT_CLASH_RS_VERSION="v0.10.8"
+typeset -gr DEFAULT_YACD_META_COMMIT="ba5f198831a1ea984cf2f46c6c0d66325fde7022"
+typeset -gr RASH_REPOSITORY="Aethergrids/Rash"
+typeset -gr CHECKSUMS_ASSET_NAME="SHA256SUMS"
+typeset -gr YACD_META_ASSET_NAME="yacd-meta-gh-pages.zip"
+
+typeset -gr CURL_BIN="${CURL_BIN:-${commands[curl]:-/usr/bin/curl}}"
+typeset -gr UNZIP_BIN="${UNZIP_BIN:-${commands[unzip]:-/usr/bin/unzip}}"
+
+typeset rash_release_version="${RASH_RELEASE_VERSION:-$DEFAULT_RASH_RELEASE_VERSION}"
+typeset clash_rs_version="${CLASH_RS_VERSION:-$DEFAULT_CLASH_RS_VERSION}"
+typeset yacd_meta_commit="${YACD_META_COMMIT:-$DEFAULT_YACD_META_COMMIT}"
+typeset asset_base_url_override="${RASH_ASSET_BASE_URL:-}"
+typeset requested_asset="all"
+typeset force="false"
+typeset temporary_root=""
+typeset checksum_manifest=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/download-assets.zsh [--only all|clash-rs|yacd-meta]
+                              [--release-version v1.0.0]
+                              [--clash-version v0.10.8]
+                              [--force]
+
+Environment overrides:
+  RASH_RELEASE_VERSION  Rash release containing mirrored assets
+  RASH_ASSET_BASE_URL   Alternate release/mirror base URL
+  CLASH_RS_VERSION      Expected Clash RS version in that release
+  YACD_META_COMMIT      Expected Yacd-meta source commit
+  GITHUB_TOKEN          Optional token for GitHub downloads
+EOF
+}
+
+die() {
+  print -u2 -r -- "download-assets: $*"
+  exit 1
+}
+
+require_executable() {
+  local executable_path="$1"
+  local label="$2"
+  [[ -n "$executable_path" && -x "$executable_path" ]] || \
+    die "$label is required but was not found"
+}
+
+cleanup() {
+  [[ -n "$temporary_root" && -d "$temporary_root" ]] || return 0
+  [[ "$temporary_root" == */rash-assets.* ]] || return 1
+  rm -rf -- "$temporary_root"
+}
+
+github_curl() {
+  local -a arguments
+  arguments=(--fail --location --silent --show-error --retry 3)
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    arguments+=(--header "Authorization: Bearer ${GITHUB_TOKEN}")
+  fi
+  "$CURL_BIN" "${arguments[@]}" "$@"
+}
+
+release_asset_url() {
+  local asset_name="$1"
+  local base_url
+
+  if [[ -n "$asset_base_url_override" ]]; then
+    base_url="${asset_base_url_override%/}"
+  else
+    base_url="https://github.com/${RASH_REPOSITORY}/releases/download/${rash_release_version}"
+  fi
+  print -r -- "${base_url}/${asset_name}"
+}
+
+sha256_file() {
+  local file_path="$1"
+  local checksum_output
+  local digest
+  local ignored
+
+  if [[ -n "${commands[sha256sum]:-}" ]]; then
+    checksum_output="$("${commands[sha256sum]}" "$file_path")"
+  elif [[ -x /usr/bin/shasum ]]; then
+    checksum_output="$(/usr/bin/shasum -a 256 "$file_path")"
+  else
+    die "sha256sum or shasum is required"
+  fi
+
+  IFS=' ' read -r digest ignored <<< "$checksum_output"
+  print -r -- "$digest"
+}
+
+ensure_checksum_manifest() {
+  [[ -s "$checksum_manifest" ]] && return 0
+  print -u2 -r -- "Downloading checksums for Rash ${rash_release_version}..."
+  github_curl "$(release_asset_url "$CHECKSUMS_ASSET_NAME")" \
+    >| "$checksum_manifest"
+}
+
+expected_digest_for() {
+  local requested_name="$1"
+  local digest
+  local file_name
+
+  ensure_checksum_manifest
+  while read -r digest file_name; do
+    file_name="${file_name#\*}"
+    if [[ "$file_name" == "$requested_name" ]]; then
+      [[ ${#digest} -eq 64 ]] || die "invalid checksum for ${requested_name}"
+      print -r -- "$digest"
+      return 0
+    fi
+  done < "$checksum_manifest"
+
+  die "${CHECKSUMS_ASSET_NAME} has no entry for ${requested_name}"
+}
+
+download_verified_asset() {
+  local asset_name="$1"
+  local destination="$2"
+  local expected_digest
+  local actual_digest
+  local download_url
+
+  expected_digest="$(expected_digest_for "$asset_name")"
+  download_url="$(release_asset_url "$asset_name")"
+  print -r -- "Downloading $download_url"
+  github_curl "$download_url" >| "$destination"
+  actual_digest="$(sha256_file "$destination")"
+  [[ "$actual_digest" == "$expected_digest" ]] || \
+    die "SHA-256 mismatch for ${asset_name}"
+}
+
+clash_asset_name() {
+  local operating_system
+  local architecture
+  operating_system="$(uname -s)"
+  architecture="$(uname -m)"
+
+  case "${operating_system}:${architecture}" in
+    Darwin:arm64) print -r -- "clash-rs-aarch64-apple-darwin" ;;
+    Darwin:x86_64) print -r -- "clash-rs-x86_64-apple-darwin" ;;
+    Linux:arm64|Linux:aarch64) print -r -- "clash-rs-aarch64-unknown-linux-gnu" ;;
+    Linux:x86_64) print -r -- "clash-rs-x86_64-unknown-linux-gnu" ;;
+    *) die "unsupported platform: ${operating_system} ${architecture}" ;;
+  esac
+}
+
+download_clash_rs() {
+  local destination="${PROJECT_ROOT}/bin/clash"
+  local asset_name
+  local download_path
+  local version_output=""
+  local installed_version=""
+
+  asset_name="$(clash_asset_name)"
+  if [[ -x "$destination" ]]; then
+    version_output="$("$destination" --version 2>/dev/null || true)"
+    installed_version="${version_output##* }"
+  fi
+
+  if [[ "$force" != "true" && "$installed_version" == "${clash_rs_version#v}" ]]; then
+    print -r -- "Clash RS ${installed_version} is already installed at $destination"
+    return 0
+  fi
+
+  download_path="${temporary_root}/${asset_name}"
+  download_verified_asset "$asset_name" "$download_path"
+  chmod 755 "$download_path"
+
+  version_output="$("$download_path" --version 2>/dev/null || true)"
+  [[ "${version_output##* }" == "${clash_rs_version#v}" ]] || \
+    die "${asset_name} is not Clash RS ${clash_rs_version#v}"
+
+  mkdir -p "${PROJECT_ROOT}/bin"
+  mv -f "$download_path" "$destination"
+  print -r -- "Installed $version_output at $destination"
+}
+
+download_yacd_meta() {
+  local destination="${PROJECT_ROOT}/assets/yacd-meta"
+  local archive_path="${temporary_root}/${YACD_META_ASSET_NAME}"
+  local extract_dir="${temporary_root}/yacd-meta-extracted"
+  local -a extracted_directories
+
+  if [[ "$force" != "true" && -r "${destination}/index.html" ]]; then
+    print -r -- "Yacd-meta is already installed at $destination"
+    return 0
+  fi
+
+  download_verified_asset "$YACD_META_ASSET_NAME" "$archive_path"
+  mkdir -p "$extract_dir"
+  "$UNZIP_BIN" -q "$archive_path" -d "$extract_dir"
+  extracted_directories=("$extract_dir"/*(/N))
+  (( ${#extracted_directories} == 1 )) || \
+    die "unexpected Yacd-meta archive layout"
+
+  mkdir -p "${PROJECT_ROOT}/assets"
+  if [[ -e "$destination" ]]; then
+    mv "$destination" "${temporary_root}/previous-yacd-meta"
+  fi
+  mv "${extracted_directories[1]}" "$destination"
+
+  {
+    print -r -- "repository=https://github.com/MetaCubeX/Yacd-meta"
+    print -r -- "branch=gh-pages"
+    print -r -- "commit=${yacd_meta_commit}"
+    print -r -- "rash-release=${rash_release_version}"
+    print -r -- "archive=$(release_asset_url "$YACD_META_ASSET_NAME")"
+  } >| "${destination}/.rash-source"
+
+  [[ -r "${destination}/index.html" ]] || die "Yacd-meta index.html is missing"
+  print -r -- "Installed Yacd-meta ${yacd_meta_commit[1,12]} at $destination"
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --only)
+      (( $# >= 2 )) || die "--only requires all, clash-rs, or yacd-meta"
+      requested_asset="$2"
+      shift 2
+      ;;
+    --release-version)
+      (( $# >= 2 )) || die "--release-version requires a release tag"
+      rash_release_version="$2"
+      shift 2
+      ;;
+    --clash-version)
+      (( $# >= 2 )) || die "--clash-version requires a release tag"
+      clash_rs_version="$2"
+      shift 2
+      ;;
+    --force)
+      force="true"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+case "$requested_asset" in
+  all|clash-rs|yacd-meta) ;;
+  *) die "--only must be all, clash-rs, or yacd-meta" ;;
+esac
+
+require_executable "$CURL_BIN" "curl"
+[[ "$requested_asset" == "clash-rs" ]] || require_executable "$UNZIP_BIN" "unzip"
+
+temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/rash-assets.XXXXXX")"
+checksum_manifest="${temporary_root}/${CHECKSUMS_ASSET_NAME}"
+trap cleanup EXIT INT TERM HUP
+
+[[ "$requested_asset" == "yacd-meta" ]] || download_clash_rs
+[[ "$requested_asset" == "clash-rs" ]] || download_yacd_meta

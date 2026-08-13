@@ -1,0 +1,14 @@
+.clrs/
+
+# Downloaded executable assets are reproducible via scripts/download-assets.zsh.
+/bin/
+
+# Profiles contain user credentials and must never be committed.
+/*.[Yy][Aa][Mm][Ll]
+/*.[Yy][Mm][Ll]
+/configs/**/*.[Yy][Aa][Mm][Ll]
+/configs/**/*.[Yy][Mm][Ll]
+/templates/**/*.[Yy][Aa][Mm][Ll]
+/templates/**/*.[Yy][Mm][Ll]
+
+.DS_Store

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clash RS Config Expert"
+  short_description: "Create and troubleshoot Clash RS YAML configs"
+  default_prompt: "Use $clash-rs-config-expert to create or review a Clash RS YAML configuration."

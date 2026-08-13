@@ -1,0 +1,445 @@
+#!/bin/zsh
+
+set -eu
+setopt pipe_fail
+
+typeset -gr SCRIPT_PATH="${0:A}"
+typeset -gr PROJECT_ROOT="${SCRIPT_PATH:h}"
+typeset -gr STATE_DIR="${CLRS_STATE_DIR:-${PROJECT_ROOT}/.clrs}"
+typeset -gr STATE_FILE="${STATE_DIR}/state"
+typeset -gr SECRET_FILE="${STATE_DIR}/controller-secret"
+typeset -gr USER_SOCKET="${STATE_DIR}/tmux.sock"
+typeset -gr ROOT_SOCKET="${STATE_DIR}/tmux-root.sock"
+typeset -gr SESSION_NAME="clrs"
+typeset -gr SESSION_RUNNER="${PROJECT_ROOT}/scripts/clrs-session.zsh"
+typeset -gr YACD_DIR="${PROJECT_ROOT}/assets/yacd-meta"
+typeset -gr UI_URL="http://127.0.0.1:9090/ui/"
+typeset -gr API_URL="http://127.0.0.1:9090"
+
+typeset default_clash_bin
+if [[ -x "${PROJECT_ROOT}/bin/clash" ]]; then
+  default_clash_bin="${PROJECT_ROOT}/bin/clash"
+else
+  default_clash_bin="${commands[clash]:-${PROJECT_ROOT}/bin/clash}"
+fi
+typeset -gr CLASH_BIN="${CLASH_BIN:-$default_clash_bin}"
+unset default_clash_bin
+typeset -gr TMUX_BIN="${TMUX_BIN:-${commands[tmux]:-}}"
+typeset -gr YQ_BIN="${YQ_BIN:-${commands[yq]:-}}"
+typeset -gr CURL_BIN="${CURL_BIN:-${commands[curl]:-/usr/bin/curl}}"
+typeset -gr LSOF_BIN="${LSOF_BIN:-${commands[lsof]:-/usr/sbin/lsof}}"
+typeset -gr OPENSSL_BIN="${OPENSSL_BIN:-${commands[openssl]:-/usr/bin/openssl}}"
+typeset -gr OPEN_BIN="${OPEN_BIN:-${commands[open]:-/usr/bin/open}}"
+typeset -gr SUDO_BIN="${SUDO_BIN:-${commands[sudo]:-/usr/bin/sudo}}"
+
+typeset ACTIVE_PROFILE=""
+typeset ACTIVE_MODE=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  clrs start --config JP|SG [--tun]
+  clrs stop
+  clrs status
+  clrs attach
+  clrs logs
+  clrs ui
+  clrs secret
+
+Examples:
+  clrs start --config JP
+  clrs start --config SG
+  clrs start --config JP --tun
+
+Detach from tmux without stopping Clash RS: Ctrl-b, then d
+EOF
+}
+
+die() {
+  print -u2 -r -- "clrs: $*"
+  exit 1
+}
+
+require_executable() {
+  local executable_path="$1"
+  local label="$2"
+  [[ -n "$executable_path" && -x "$executable_path" ]] || \
+    die "$label is required but was not found"
+}
+
+ensure_dependencies() {
+  require_executable "$CLASH_BIN" "Clash RS"
+  require_executable "$TMUX_BIN" "tmux"
+  require_executable "$YQ_BIN" "yq v4"
+  require_executable "$CURL_BIN" "curl"
+  require_executable "$OPENSSL_BIN" "openssl"
+  require_executable "$SESSION_RUNNER" "clrs session runner"
+  [[ -r "${YACD_DIR}/index.html" ]] || \
+    die "Yacd-meta assets are missing; run scripts/download-assets.zsh --only yacd-meta"
+}
+
+normalize_profile() {
+  local profile="${1:u}"
+  case "$profile" in
+    JP|SG) print -r -- "$profile" ;;
+    *) die "--config must be JP or SG" ;;
+  esac
+}
+
+base_config_for() {
+  print -r -- "${PROJECT_ROOT}/configs/$1/config.yaml"
+}
+
+runtime_dir_for() {
+  print -r -- "${STATE_DIR}/runtime/${1:l}-$2"
+}
+
+runtime_config_for() {
+  print -r -- "$(runtime_dir_for "$1" "$2")/config.yaml"
+}
+
+socket_for() {
+  if [[ "$1" == "tun" ]]; then
+    print -r -- "$ROOT_SOCKET"
+  else
+    print -r -- "$USER_SOCKET"
+  fi
+}
+
+tmux_run() {
+  local mode="$1"
+  shift
+  local socket
+  socket="$(socket_for "$mode")"
+
+  if [[ "$mode" == "tun" ]]; then
+    "$SUDO_BIN" "$TMUX_BIN" -S "$socket" "$@"
+  else
+    "$TMUX_BIN" -S "$socket" "$@"
+  fi
+}
+
+tmux_has_session() {
+  tmux_run "$1" has-session -t "$SESSION_NAME" 2>/dev/null
+}
+
+read_state() {
+  ACTIVE_PROFILE=""
+  ACTIVE_MODE=""
+  [[ -s "$STATE_FILE" ]] || return 1
+  IFS=: read -r ACTIVE_PROFILE ACTIVE_MODE < "$STATE_FILE"
+  [[ "$ACTIVE_PROFILE" == "JP" || "$ACTIVE_PROFILE" == "SG" ]] || return 1
+  [[ "$ACTIVE_MODE" == "proxy" || "$ACTIVE_MODE" == "tun" ]] || return 1
+}
+
+write_state() {
+  print -r -- "$1:$2" >| "$STATE_FILE"
+  chmod 600 "$STATE_FILE"
+}
+
+clear_state() {
+  : >| "$STATE_FILE"
+}
+
+prepare_state_dir() {
+  mkdir -p "$STATE_DIR"
+  chmod 700 "$STATE_DIR"
+}
+
+prepare_secret() {
+  [[ -s "$SECRET_FILE" ]] && return
+
+  local temporary_secret
+  temporary_secret="$(mktemp "${STATE_DIR}/controller-secret.XXXXXX")"
+  "$OPENSSL_BIN" rand -hex 32 >| "$temporary_secret"
+  chmod 600 "$temporary_secret"
+  mv -f "$temporary_secret" "$SECRET_FILE"
+}
+
+render_runtime_config() {
+  local profile="$1"
+  local mode="$2"
+  local base_config
+  local runtime_dir
+  local runtime_config
+  local temporary_config
+  local tun_filter="del(.tun)"
+  local yq_filter
+
+  base_config="$(base_config_for "$profile")"
+  runtime_dir="$(runtime_dir_for "$profile" "$mode")"
+  runtime_config="${runtime_dir}/config.yaml"
+
+  [[ -r "$base_config" ]] || die "missing base config: $base_config"
+  mkdir -p "$runtime_dir"
+  chmod 700 "$runtime_dir"
+
+  if [[ "$mode" == "tun" ]]; then
+    tun_filter='.tun = {
+      "enable": true,
+      "device-id": "utun1989",
+      "gateway": "198.19.0.1/16",
+      "route-all": true,
+      "dns-hijack": true
+    }'
+  fi
+  temporary_config="$(mktemp "${runtime_dir}/config.yaml.XXXXXX")"
+
+  yq_filter='.["external-controller"] = "127.0.0.1:9090" |
+    .["external-ui"] = strenv(CLRS_UI_DIR) |
+    del(.["external-ui-url"]) |
+    .profile["store-selected"] = true |
+    .secret = strenv(CLRS_SECRET_VALUE) | '
+  yq_filter+="$tun_filter"
+
+  CLRS_SECRET_VALUE="$(<"$SECRET_FILE")" \
+  CLRS_UI_DIR="$YACD_DIR" \
+    "$YQ_BIN" eval "$yq_filter" "$base_config" >| "$temporary_config"
+
+  chmod 600 "$temporary_config"
+  mv -f "$temporary_config" "$runtime_config"
+  print -r -- "$runtime_config"
+}
+
+validate_runtime_config() {
+  local runtime_config="$1"
+  local runtime_dir="${runtime_config:h}"
+
+  "$CLASH_BIN" \
+    --directory "$runtime_dir" \
+    --config "$runtime_config" \
+    --test-config \
+    --strict-config
+}
+
+assert_ports_available() {
+  local port
+  for port in 7890 9090; do
+    if "$LSOF_BIN" -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+      die "TCP port $port is already in use"
+    fi
+  done
+
+  if "$LSOF_BIN" -nP -iUDP:1053 >/dev/null 2>&1; then
+    die "UDP port 1053 is already in use"
+  fi
+}
+
+capture_logs() {
+  local mode="$1"
+  tmux_run "$mode" capture-pane -p -t "${SESSION_NAME}:0.0" -S -200 2>/dev/null || true
+}
+
+wait_for_api() {
+  local mode="$1"
+  local secret
+  local attempt
+  secret="$(<"$SECRET_FILE")"
+
+  for attempt in {1..60}; do
+    if "$CURL_BIN" --fail --silent --show-error \
+      --connect-timeout 1 --max-time 2 \
+      --header "Authorization: Bearer ${secret}" \
+      "${API_URL}/version" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  print -u2 -r -- "clrs: Clash RS did not expose its controller within 30 seconds"
+  capture_logs "$mode" >&2
+  return 1
+}
+
+wait_for_ui() {
+  local attempt
+  for attempt in {1..30}; do
+    if "$CURL_BIN" --fail --silent --output /dev/null \
+      --connect-timeout 1 --max-time 2 "$UI_URL"; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+start_service() {
+  local profile=""
+  local mode="proxy"
+  local runtime_config
+  local runtime_dir
+  local command_line
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --config|-c)
+        (( $# >= 2 )) || die "$1 requires JP or SG"
+        profile="$(normalize_profile "$2")"
+        shift 2
+        ;;
+      --config=*)
+        profile="$(normalize_profile "${1#*=}")"
+        shift
+        ;;
+      --tun)
+        mode="tun"
+        shift
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *) die "unknown start option: $1" ;;
+    esac
+  done
+
+  [[ -n "$profile" ]] || die "start requires --config JP or --config SG"
+  [[ "$mode" != "tun" || "$(uname -s)" == "Darwin" ]] || \
+    die "this --tun preset is currently configured for macOS"
+
+  ensure_dependencies
+  prepare_state_dir
+  prepare_secret
+
+  if read_state && tmux_has_session "$ACTIVE_MODE"; then
+    die "$ACTIVE_PROFILE is already running in $ACTIVE_MODE mode; run 'clrs stop' first"
+  fi
+
+  assert_ports_available
+  runtime_config="$(render_runtime_config "$profile" "$mode")"
+  runtime_dir="${runtime_config:h}"
+
+  print -r -- "Validating ${profile} configuration..."
+  validate_runtime_config "$runtime_config"
+
+  if [[ "$mode" == "tun" ]]; then
+    require_executable "$SUDO_BIN" "sudo"
+    print -r -- "TUN mode needs administrator access to create routes and utun1989."
+    "$SUDO_BIN" -v
+  fi
+
+  command_line="${(q)SESSION_RUNNER} ${(q)CLASH_BIN} ${(q)runtime_dir} ${(q)runtime_config}"
+  tmux_run "$mode" new-session -d \
+    -s "$SESSION_NAME" \
+    -n clash-rs \
+    -c "$runtime_dir" \
+    "$command_line"
+  write_state "$profile" "$mode"
+
+  if ! wait_for_api "$mode"; then
+    print -u2 -r -- "Use 'clrs attach' to inspect the preserved tmux session."
+    return 1
+  fi
+
+  print -r -- "Clash RS started: profile=$profile mode=$mode"
+  print -r -- "Proxy: http://127.0.0.1:7890  (HTTP + SOCKS5)"
+  print -r -- "Yacd:  $UI_URL"
+  print -r -- "Tmux:  clrs attach"
+  [[ "$mode" == "tun" ]] && print -r -- "TUN:   utun1989, route-all, DNS hijack enabled"
+
+  if ! wait_for_ui; then
+    print -u2 -r -- "Yacd is still downloading; run 'clrs logs' or retry the UI shortly."
+  fi
+}
+
+stop_service() {
+  local attempt
+
+  prepare_state_dir
+  if ! read_state; then
+    print -r -- "Clash RS is not running."
+    return 0
+  fi
+
+  if ! tmux_has_session "$ACTIVE_MODE"; then
+    clear_state
+    print -r -- "Clash RS is already stopped."
+    return 0
+  fi
+
+  print -r -- "Stopping $ACTIVE_PROFILE ($ACTIVE_MODE)..."
+  tmux_run "$ACTIVE_MODE" send-keys -t "${SESSION_NAME}:0.0" C-c
+
+  for attempt in {1..40}; do
+    tmux_has_session "$ACTIVE_MODE" || break
+    sleep 0.25
+  done
+
+  if tmux_has_session "$ACTIVE_MODE"; then
+    print -u2 -r -- "clrs: graceful shutdown timed out; closing the tmux session"
+    tmux_run "$ACTIVE_MODE" kill-session -t "$SESSION_NAME"
+  fi
+
+  clear_state
+  print -r -- "Clash RS stopped."
+}
+
+status_service() {
+  prepare_state_dir
+  if ! read_state || ! tmux_has_session "$ACTIVE_MODE"; then
+    print -r -- "Clash RS: stopped"
+    return 1
+  fi
+
+  print -r -- "Clash RS: running"
+  print -r -- "Profile:  $ACTIVE_PROFILE"
+  print -r -- "Mode:     $ACTIVE_MODE"
+  print -r -- "Proxy:    http://127.0.0.1:7890"
+  print -r -- "Yacd:     $UI_URL"
+  print -r -- "Session:  $SESSION_NAME"
+}
+
+require_active_session() {
+  prepare_state_dir
+  read_state || die "Clash RS is not running"
+  tmux_has_session "$ACTIVE_MODE" || die "the recorded tmux session is no longer running"
+}
+
+attach_service() {
+  require_active_session
+  local socket
+  socket="$(socket_for "$ACTIVE_MODE")"
+
+  if [[ "$ACTIVE_MODE" == "tun" ]]; then
+    exec "$SUDO_BIN" "$TMUX_BIN" -S "$socket" attach-session -t "$SESSION_NAME"
+  else
+    exec "$TMUX_BIN" -S "$socket" attach-session -t "$SESSION_NAME"
+  fi
+}
+
+show_logs() {
+  require_active_session
+  capture_logs "$ACTIVE_MODE"
+}
+
+open_ui() {
+  require_active_session
+  require_executable "$OPEN_BIN" "macOS open"
+  "$OPEN_BIN" "$UI_URL"
+  print -r -- "If Yacd asks for the API secret, run: clrs secret"
+}
+
+show_secret() {
+  prepare_state_dir
+  prepare_secret
+  print -r -- "$(<"$SECRET_FILE")"
+}
+
+main() {
+  local command="${1:-help}"
+  (( $# > 0 )) && shift
+
+  case "$command" in
+    start) start_service "$@" ;;
+    stop) stop_service "$@" ;;
+    status) status_service "$@" ;;
+    attach) attach_service "$@" ;;
+    logs) show_logs "$@" ;;
+    ui) open_ui "$@" ;;
+    secret) show_secret "$@" ;;
+    help|-h|--help) usage ;;
+    *) die "unknown command: $command (run 'clrs help')" ;;
+  esac
+}
+
+main "$@"

@@ -33,8 +33,10 @@ project:
 ./scripts/download-assets.zsh
 ```
 
-The downloader selects the macOS/Linux architecture, resolves the official
-Clash RS release asset, and verifies its published SHA-256 digest. It installs:
+The downloader selects the macOS/Linux architecture, fetches the mirrored
+dependencies from the Rash release, and verifies them against that release's
+`SHA256SUMS`. The mirrored Clash RS checksums are also compared with the
+official upstream release before publication. It installs:
 
 - `bin/clash` — local generated executable, ignored by Git
 - `assets/yacd-meta/` — vendored UI with upstream provenance in `.rash-source`
@@ -43,12 +45,15 @@ Useful update commands:
 
 ```zsh
 ./scripts/download-assets.zsh --only yacd-meta --force
-./scripts/download-assets.zsh --only clash-rs --clash-version v0.10.8 --force
+./scripts/download-assets.zsh --only clash-rs --force
 ```
 
-`CLASH_RS_VERSION`, `YACD_META_URL`, and an optional `GITHUB_TOKEN` can also be
-provided as environment variables. Run `./scripts/download-assets.zsh --help`
-for the complete interface.
+Release [`v1.0.0`](https://github.com/Aethergrids/Rash/releases/tag/v1.0.0)
+contains Clash RS `v0.10.8` for macOS and Linux on arm64 and x86_64, plus the
+Yacd-meta `gh-pages` snapshot. `RASH_RELEASE_VERSION`,
+`RASH_ASSET_BASE_URL`, `CLASH_RS_VERSION`, `YACD_META_COMMIT`, and an optional
+`GITHUB_TOKEN` can be provided as environment variables. Run
+`./scripts/download-assets.zsh --help` for the complete interface.
 
 ## Add private profiles
 
@@ -130,4 +135,5 @@ credentials or live connectivity work.
 
 ## License
 
-MIT. See `LICENSE`.
+Rash is MIT licensed. See `LICENSE` and `THIRD_PARTY_NOTICES.md` for mirrored
+dependency provenance and licenses.

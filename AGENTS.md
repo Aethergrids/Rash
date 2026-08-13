@@ -35,7 +35,7 @@ binary with both `--test-config` and `--strict-config`.
   path.
 - `bin/` contains reproducible downloaded executables and stays untracked.
 - `assets/yacd-meta/` contains vendored static UI files and `.rash-source`
-  provenance metadata.
+  provenance metadata. Release downloads must match `SHA256SUMS`.
 - `.clrs/` contains private runtime state and stays untracked.
 
 Run `zsh -n clrs scripts/*.zsh` after shell changes. Run the asset downloader,

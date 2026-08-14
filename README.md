@@ -40,19 +40,22 @@ official upstream release before publication. It installs:
 
 - `bin/clash` — local generated executable, ignored by Git
 - `assets/yacd-meta/` — vendored UI with upstream provenance in `.rash-source`
+- `assets/geoip/Country.mmdb` — pinned GeoIP database used by `GEOIP` rules
 
 Useful update commands:
 
 ```zsh
 ./scripts/download-assets.zsh --only yacd-meta --force
 ./scripts/download-assets.zsh --only clash-rs --force
+./scripts/download-assets.zsh --only geoip --force
 ```
 
 Release [`v1.0.0`](https://github.com/Aethergrids/Rash/releases/tag/v1.0.0)
 contains Clash RS `v0.10.8` for macOS and Linux on arm64 and x86_64, plus the
 Yacd-meta `gh-pages` snapshot. `RASH_RELEASE_VERSION`,
-`RASH_ASSET_BASE_URL`, `CLASH_RS_VERSION`, `YACD_META_COMMIT`, and an optional
-`GITHUB_TOKEN` can be provided as environment variables. Run
+`RASH_ASSET_BASE_URL`, `CLASH_RS_VERSION`, `YACD_META_COMMIT`, `GEOIP_VERSION`,
+`GEOIP_SHA256`, and an optional `GITHUB_TOKEN` can be provided as environment
+variables. Run
 `./scripts/download-assets.zsh --help` for the complete interface.
 
 ## Add private profiles
@@ -92,7 +95,7 @@ ln -sfn "$PWD/clrs" ~/.local/bin/clrs
 clrs start --config JP
 clrs start --config SG
 clrs start --config JP --select
-clrs start --config JP --tun
+clrs start --config JP --select --system-proxy
 
 clrs select
 clrs system-proxy on
@@ -103,6 +106,9 @@ clrs status
 clrs logs
 clrs attach
 clrs ui
+clrs exec -- git pull
+eval "$(clrs env)"
+eval "$(clrs env --unset)"
 clrs secret
 clrs stop
 ```
@@ -112,6 +118,14 @@ at `127.0.0.1:7890` when needed, or use the `system-proxy` switch. It does this
 for the `Wi-Fi` network service and restores its previous HTTP/HTTPS
 settings when turned off or when `clrs stop` runs. For another service, use
 `clrs system-proxy on --service "USB 10/100/1000 LAN"`.
+Use `--system-proxy` on `clrs start` when the default `Wi-Fi` service is
+correct and both operations should happen together.
+
+Terminal programs do not consistently read the macOS system proxy. Run one
+command through Rash with `clrs exec -- COMMAND`, or apply the proxy variables
+to the current shell with `eval "$(clrs env)"`. Undo those variables with
+`eval "$(clrs env --unset)"`. Add organization-specific hosts to `NO_PROXY`
+when a corporate command must bypass Rash.
 
 Another active proxy VPN or network extension can override this setting. In
 that case, `clrs system-proxy status` reports the override; stop the other
@@ -129,10 +143,19 @@ Connection: Proxy -> VPS-Reality
 The selection is stored by Clash RS, so the current member—not necessarily the
 first configured member—becomes the next prompt's default.
 
-TUN mode is macOS-only in the current preset. It requests `sudo`, creates
-`utun1989`, uses `198.19.0.1/16` as its gateway, routes all traffic, and
-hijacks DNS. `clrs status` reports whether `utun1989` is active. Stop it with
-`clrs stop` so Clash RS can remove routes cleanly.
+For OpenVPN and Cisco Secure Client coexistence, connect the organization VPN
+first, then run `clrs start --config SG --select --system-proxy`. Regular mode
+does not create a tunnel, replace routes, or hijack DNS, so the VPN keeps
+ownership of its private routes and resolvers. Re-run `clrs system-proxy
+status` after the VPN reconnects because a network extension may replace
+macOS proxy settings.
+
+TUN mode is intentionally unsupported. Live macOS testing found repeatable,
+application-specific TLS timeouts in both the stable userspace stack and an
+unmerged system-stack implementation, while the same requests succeeded
+through the local mixed proxy. `clrs start ... --tun` therefore exits without
+starting Clash RS. Rash will reconsider TUN after the upstream implementation
+has matured and received reliable macOS coverage.
 
 `clrs attach` opens the tmux session. Detach without stopping it by pressing
 `Ctrl-b`, then `d`. If Clash RS exits unexpectedly, the session stays open so

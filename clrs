@@ -14,6 +14,7 @@ typeset -gr ROOT_SOCKET="${STATE_DIR}/tmux-root.sock"
 typeset -gr SESSION_NAME="clrs"
 typeset -gr SESSION_RUNNER="${PROJECT_ROOT}/scripts/clrs-session.zsh"
 typeset -gr YACD_DIR="${PROJECT_ROOT}/assets/yacd-meta"
+typeset -gr COUNTRY_MMDB="${PROJECT_ROOT}/assets/geoip/Country.mmdb"
 typeset -gr UI_URL="http://127.0.0.1:9090/ui/"
 typeset -gr API_URL="http://127.0.0.1:9090"
 
@@ -48,7 +49,7 @@ typeset PREVIOUS_HTTPS_PORT=""
 usage() {
   cat <<'EOF'
 Usage:
-  clrs start --config JP|SG [--tun] [--select]
+  clrs start --config JP|SG [--select] [--system-proxy]
   clrs stop
   clrs status
   clrs select
@@ -58,14 +59,16 @@ Usage:
   clrs attach
   clrs logs
   clrs ui
+  clrs env [--unset]
+  clrs exec [--] COMMAND [ARG ...]
   clrs secret
 
 Examples:
   clrs start --config JP
   clrs start --config SG
-  clrs start --config JP --select
-  clrs system-proxy on
-  clrs start --config JP --tun
+  clrs start --config JP --select --system-proxy
+  clrs exec -- git pull
+  eval "$(clrs env)"
 
 Detach from tmux without stopping Clash RS: Ctrl-b, then d
 EOF
@@ -92,6 +95,8 @@ ensure_dependencies() {
   require_executable "$SESSION_RUNNER" "clrs session runner"
   [[ -r "${YACD_DIR}/index.html" ]] || \
     die "Yacd-meta assets are missing; run scripts/download-assets.zsh --only yacd-meta"
+  [[ -r "$COUNTRY_MMDB" ]] || \
+    die "GeoIP assets are missing; run scripts/download-assets.zsh --only geoip"
 }
 
 normalize_profile() {
@@ -363,7 +368,8 @@ render_runtime_config() {
   fi
   temporary_config="$(mktemp "${runtime_dir}/config.yaml.XXXXXX")"
 
-  yq_filter='.["external-controller"] = "127.0.0.1:9090" |
+  yq_filter='.mmdb = strenv(CLRS_MMDB_PATH) |
+    .["external-controller"] = "127.0.0.1:9090" |
     .["external-ui"] = strenv(CLRS_UI_DIR) |
     del(.["external-ui-url"]) |
     .profile["store-selected"] = true |
@@ -372,6 +378,7 @@ render_runtime_config() {
 
   CLRS_SECRET_VALUE="$(<"$SECRET_FILE")" \
   CLRS_UI_DIR="$YACD_DIR" \
+  CLRS_MMDB_PATH="$COUNTRY_MMDB" \
     "$YQ_BIN" eval "$yq_filter" "$base_config" >| "$temporary_config"
 
   chmod 600 "$temporary_config"
@@ -405,7 +412,7 @@ assert_ports_available() {
 
 capture_logs() {
   local mode="$1"
-  tmux_run "$mode" capture-pane -p -t "${SESSION_NAME}:0.0" -S -200 2>/dev/null || true
+  tmux_run "$mode" capture-pane -p -J -t "${SESSION_NAME}:0.0" -S -200 2>/dev/null || true
 }
 
 wait_for_api() {
@@ -539,6 +546,40 @@ choose_index() {
   print -r -- "$choice"
 }
 
+proxy_member_detail() {
+  local proxy_name="$1"
+  local proxies_json="$2"
+  local proxy_type
+  local server
+  local server_kind=""
+  local runtime_config
+
+  proxy_type="$(PROXY_NAME="$proxy_name" print -r -- "$proxies_json" | \
+    PROXY_NAME="$proxy_name" "$YQ_BIN" -p=json -r \
+      '.proxies[strenv(PROXY_NAME)].type // "unknown"')"
+  runtime_config="$(runtime_config_for "$ACTIVE_PROFILE" "$ACTIVE_MODE")"
+  if [[ -r "$runtime_config" ]]; then
+    server="$(PROXY_NAME="$proxy_name" "$YQ_BIN" -r \
+      '.proxies[] | select(.name == strenv(PROXY_NAME)) | .server // ""' \
+      "$runtime_config")"
+  fi
+  if [[ -n "$server" ]]; then
+    if [[ "$server" == *:* ]]; then
+      server_kind="IPv6"
+    elif [[ "$server" =~ '^[0-9.]+$' ]]; then
+      server_kind="IPv4"
+    else
+      server_kind="hostname"
+    fi
+  fi
+
+  if [[ -n "$server_kind" ]]; then
+    print -r -- "${proxy_type}, ${server_kind}"
+  else
+    print -r -- "$proxy_type"
+  fi
+}
+
 select_proxy_interactive() {
   local proxies_json
   local rows
@@ -556,6 +597,7 @@ select_proxy_interactive() {
   local -a selector_currents
   local -a members
   local -a delays
+  local -a details
   local -a result_files
   local -a delay_pids
 
@@ -589,6 +631,7 @@ select_proxy_interactive() {
 
   for (( index = 1; index <= ${#members}; index++ )); do
     [[ "${members[$index]}" == "$selected_name" ]] && default_index="$index"
+    details+=("$(proxy_member_detail "${members[$index]}" "$proxies_json")")
     result_file="$(mktemp "${STATE_DIR}/delay.XXXXXX")"
     result_files+=("$result_file")
     measure_proxy_delay "${members[$index]}" >| "$result_file" &
@@ -605,10 +648,11 @@ select_proxy_interactive() {
   for (( index = 1; index <= ${#members}; index++ )); do
     member_name="${members[$index]}"
     if (( index == default_index )); then
-      printf '  %d) %-28s %8s  [default/current]\n' \
-        "$index" "$member_name" "${delays[$index]}"
+      printf '  %d) %-24s %-18s %8s  [default/current]\n' \
+        "$index" "$member_name" "${details[$index]}" "${delays[$index]}"
     else
-      printf '  %d) %-28s %8s\n' "$index" "$member_name" "${delays[$index]}"
+      printf '  %d) %-24s %-18s %8s\n' \
+        "$index" "$member_name" "${details[$index]}" "${delays[$index]}"
     fi
   done
   choice="$(choose_index "Choose proxy" "$default_index" "${#members}")"
@@ -632,6 +676,7 @@ start_service() {
   local profile=""
   local mode="proxy"
   local prompt_for_selector="false"
+  local enable_system_proxy="false"
   local runtime_config
   local runtime_dir
   local command_line
@@ -648,11 +693,14 @@ start_service() {
         shift
         ;;
       --tun)
-        mode="tun"
-        shift
+        die "TUN mode is currently unsupported; use regular mode with --system-proxy"
         ;;
       --select)
         prompt_for_selector="true"
+        shift
+        ;;
+      --system-proxy)
+        enable_system_proxy="true"
         shift
         ;;
       -h|--help)
@@ -668,7 +716,10 @@ start_service() {
     die "--select requires an interactive terminal"
   [[ "$mode" != "tun" || "$(uname -s)" == "Darwin" ]] || \
     die "this --tun preset is currently configured for macOS"
-
+  [[ "$enable_system_proxy" != "true" || "$mode" == "proxy" ]] || \
+    die "--system-proxy cannot be combined with --tun"
+  [[ "$enable_system_proxy" != "true" || "$(uname -s)" == "Darwin" ]] || \
+    die "--system-proxy is only supported on macOS"
   ensure_dependencies
   prepare_state_dir
   prepare_secret
@@ -702,7 +753,6 @@ start_service() {
     print -u2 -r -- "Use 'clrs attach' to inspect the preserved tmux session."
     return 1
   fi
-
   print -r -- "Clash RS started: profile=$profile mode=$mode"
   print -r -- "Proxy: http://127.0.0.1:7890  (HTTP + SOCKS5)"
   print -r -- "Yacd:  $UI_URL"
@@ -717,6 +767,12 @@ start_service() {
     select_proxy_interactive
   else
     show_runtime_connection
+  fi
+
+  if [[ "$enable_system_proxy" == "true" ]] && ! (system_proxy_command on); then
+    print -u2 -r -- "clrs: system proxy setup failed; stopping Clash RS"
+    stop_service || true
+    return 1
   fi
 }
 
@@ -800,6 +856,43 @@ open_ui() {
   print -r -- "If Yacd asks for the API secret, run: clrs secret"
 }
 
+proxy_environment() {
+  if [[ "${1:-}" == "--unset" ]]; then
+    (( $# == 1 )) || die "usage: clrs env [--unset]"
+    print -r -- "unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY"
+    print -r -- "unset http_proxy https_proxy all_proxy no_proxy"
+    return 0
+  fi
+  (( $# == 0 )) || die "usage: clrs env [--unset]"
+  require_active_session
+  print -r -- "export HTTP_PROXY=http://127.0.0.1:7890"
+  print -r -- "export HTTPS_PROXY=http://127.0.0.1:7890"
+  print -r -- "export ALL_PROXY=socks5h://127.0.0.1:7890"
+  print -r -- "export NO_PROXY=localhost,127.0.0.1,::1"
+  print -r -- "export http_proxy=\$HTTP_PROXY"
+  print -r -- "export https_proxy=\$HTTPS_PROXY"
+  print -r -- "export all_proxy=\$ALL_PROXY"
+  print -r -- "export no_proxy=\$NO_PROXY"
+}
+
+proxy_exec() {
+  require_active_session
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  (( $# > 0 )) || die "usage: clrs exec [--] COMMAND [ARG ...]"
+  exec /usr/bin/env \
+    HTTP_PROXY=http://127.0.0.1:7890 \
+    HTTPS_PROXY=http://127.0.0.1:7890 \
+    ALL_PROXY=socks5h://127.0.0.1:7890 \
+    NO_PROXY=localhost,127.0.0.1,::1 \
+    http_proxy=http://127.0.0.1:7890 \
+    https_proxy=http://127.0.0.1:7890 \
+    all_proxy=socks5h://127.0.0.1:7890 \
+    no_proxy=localhost,127.0.0.1,::1 \
+    "$@"
+}
+
 show_secret() {
   prepare_state_dir
   prepare_secret
@@ -819,6 +912,8 @@ main() {
     attach) attach_service "$@" ;;
     logs) show_logs "$@" ;;
     ui) open_ui "$@" ;;
+    env) proxy_environment "$@" ;;
+    exec) proxy_exec "$@" ;;
     secret) show_secret "$@" ;;
     help|-h|--help) usage ;;
     *) die "unknown command: $command (run 'clrs help')" ;;

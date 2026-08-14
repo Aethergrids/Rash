@@ -1,177 +1,211 @@
 # Rash
 
-Rash is a small, inspectable Clash RS client for macOS. It combines a zsh CLI,
-a project-scoped tmux session, private local profiles, and the Yacd-meta web UI
-without installing a system daemon.
+Rash is a small, inspectable Clash RS launcher built around zsh and tmux. It
+runs a private Clash RS profile in the background, exposes a local HTTP/SOCKS5
+proxy, and serves Yacd-meta without installing a system daemon.
 
-## What it runs
+Rash currently supports regular proxy mode only. TUN is intentionally disabled
+because Clash RS `v0.10.8` has shown repeatable, application-specific failures
+on macOS even when mixed-proxy traffic is healthy.
 
-- Clash RS in a background tmux session
-- A mixed HTTP/SOCKS5 proxy on `127.0.0.1:7890`
-- The Clash controller and vendored Yacd-meta UI on `127.0.0.1:9090`
-- Clash DNS on `127.0.0.1:1053`
+## Quick start
 
-Only one profile runs at a time because profiles share these ports. Yacd-meta
-is static content served by Clash RS, not a second daemon.
-
-## Requirements
-
-Rash expects macOS, zsh, `curl`, `unzip`, `openssl`,
-[tmux](https://github.com/tmux/tmux), and
-[yq v4](https://github.com/mikefarah/yq). With Homebrew:
+Rash is designed primarily for macOS. Install the command-line dependencies:
 
 ```zsh
 brew install tmux yq
 ```
 
-## Bootstrap assets
-
-Download the matching pre-built Clash RS binary and Yacd-meta site into this
-project:
+Clone and bootstrap the versioned runtime assets:
 
 ```zsh
+git clone https://github.com/Aethergrids/Rash.git
+cd Rash
 ./scripts/download-assets.zsh
 ```
 
-The downloader selects the macOS/Linux architecture, fetches the mirrored
-dependencies from the Rash release, and verifies them against that release's
-`SHA256SUMS`. The mirrored Clash RS checksums are also compared with the
-official upstream release before publication. It installs:
-
-- `bin/clash` — local generated executable, ignored by Git
-- `assets/yacd-meta/` — vendored UI with upstream provenance in `.rash-source`
-- `assets/geoip/Country.mmdb` — pinned GeoIP database used by `GEOIP` rules
-
-Useful update commands:
+Place a Clash RS-compatible profile at `configs/JP/config.yaml` or
+`configs/SG/config.yaml`, then start Rash:
 
 ```zsh
-./scripts/download-assets.zsh --only yacd-meta --force
-./scripts/download-assets.zsh --only clash-rs --force
-./scripts/download-assets.zsh --only geoip --force
+./clrs start --config SG --select --system-proxy
 ```
 
-Release [`v1.0.0`](https://github.com/Aethergrids/Rash/releases/tag/v1.0.0)
-contains Clash RS `v0.10.8` for macOS and Linux on arm64 and x86_64, plus the
-Yacd-meta `gh-pages` snapshot. `RASH_RELEASE_VERSION`,
-`RASH_ASSET_BASE_URL`, `CLASH_RS_VERSION`, `YACD_META_COMMIT`, `GEOIP_VERSION`,
-`GEOIP_SHA256`, and an optional `GITHUB_TOKEN` can be provided as environment
-variables. Run
-`./scripts/download-assets.zsh --help` for the complete interface.
+Open `http://127.0.0.1:9090/ui/` to manage the active connection. Stop Rash
+when finished so any macOS proxy settings are restored:
 
-## Add private profiles
-
-No working profile YAML is published with this repository. Put each local,
-Clash RS-compatible profile at:
-
-```text
-configs/<PROFILE>/config.yaml
+```zsh
+./clrs stop
 ```
 
-For example, the launcher currently accepts `JP` and `SG` at
-`configs/JP/config.yaml` and `configs/SG/config.yaml`.
-
-To migrate an existing Clash Verge Rev or Mihomo profile, place a copy under
-`templates/` and ask an agent to follow `templates/AGENTS.md`. The project
-includes an English `clash-rs-config-expert` skill and a safe
-`templates/config.template` baseline. Inputs are preserved; converted output
-goes to `configs/<PROFILE>/config.yaml`.
-
-The root, `configs/`, and `templates/` YAML ignore rules are intentional.
-Never use `git add -f` for profile files.
-
-## Install the command
-
-Run it directly as `./clrs`, or add a symlink to a directory already on your
-`PATH`:
+To use `clrs` outside the repository:
 
 ```zsh
 mkdir -p ~/.local/bin
 ln -sfn "$PWD/clrs" ~/.local/bin/clrs
 ```
 
-## Use Rash
+## What Rash runs
+
+- Clash RS in a project-scoped tmux session
+- a mixed HTTP/SOCKS5 proxy at `127.0.0.1:7890`
+- the Clash controller and Yacd-meta at `127.0.0.1:9090`
+- Clash DNS at `127.0.0.1:1053`
+
+Only one profile runs at a time because profiles share these ports. Yacd-meta
+is static content served by Clash RS, not a second daemon.
+
+## Private profiles
+
+No working profile or credentials are published. The launcher accepts these
+local paths:
+
+```text
+configs/JP/config.yaml
+configs/SG/config.yaml
+```
+
+To migrate an existing Clash Verge Rev or Mihomo profile, place a copy under
+`templates/` and ask an agent to follow `templates/AGENTS.md`. The repository
+includes an English `clash-rs-config-expert` skill and
+`templates/config.template` as the compatibility baseline.
+
+Profile YAML under the repository root, `configs/`, and `templates/` is ignored
+intentionally. Never use `git add -f` for these files.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `clrs start --config JP` | Start one profile without changing macOS proxy settings |
+| `clrs start --config SG --select` | Start and choose a Selector member after latency tests |
+| `clrs start --config SG --select --system-proxy` | Start and enable the default `Wi-Fi` HTTP/HTTPS proxy |
+| `clrs select` | Change the active Selector member |
+| `clrs status` | Show the profile, mode, UI URL, and selected connection |
+| `clrs system-proxy status` | Show Rash and effective macOS proxy state |
+| `clrs system-proxy on\|off` | Enable or restore macOS proxy settings |
+| `clrs exec -- COMMAND` | Run a terminal command through Rash |
+| `clrs env` / `clrs env --unset` | Print shell commands that set or clear proxy variables |
+| `clrs ui` | Open Yacd-meta |
+| `clrs logs` | Print the retained tmux output |
+| `clrs attach` | Attach to the tmux session; detach with `Ctrl-b`, then `d` |
+| `clrs secret` | Print the private controller secret for Yacd-meta |
+| `clrs stop` | Stop Clash RS and restore macOS proxy settings |
+
+Selector choices are stored by Clash RS. A change made in Yacd-meta is
+immediately reflected by `clrs status` and `clrs system-proxy status`:
+
+```text
+Connection: Proxy -> <selected member>
+```
+
+## macOS system proxy
+
+Regular startup leaves macOS settings unchanged. Applications can use
+`127.0.0.1:7890` directly, or Rash can manage the HTTP and HTTPS proxy for the
+`Wi-Fi` network service:
 
 ```zsh
-clrs start --config JP
-clrs start --config SG
-clrs start --config JP --select
-clrs start --config JP --select --system-proxy
-
-clrs select
-clrs system-proxy on
+clrs start --config SG --select --system-proxy
 clrs system-proxy status
-clrs system-proxy off
-
-clrs status
-clrs logs
-clrs attach
-clrs ui
-clrs exec -- git pull
-eval "$(clrs env)"
-eval "$(clrs env --unset)"
-clrs secret
 clrs stop
 ```
 
-Starting regular mode does not alter macOS proxy settings. Point applications
-at `127.0.0.1:7890` when needed, or use the `system-proxy` switch. It does this
-for the `Wi-Fi` network service and restores its previous HTTP/HTTPS
-settings when turned off or when `clrs stop` runs. For another service, use
-`clrs system-proxy on --service "USB 10/100/1000 LAN"`.
-Use `--system-proxy` on `clrs start` when the default `Wi-Fi` service is
-correct and both operations should happen together.
+`clrs stop` restores the previous settings. For another network service, start
+Rash first and then specify its exact name:
 
-Terminal programs do not consistently read the macOS system proxy. Run one
-command through Rash with `clrs exec -- COMMAND`, or apply the proxy variables
-to the current shell with `eval "$(clrs env)"`. Undo those variables with
-`eval "$(clrs env --unset)"`. Add organization-specific hosts to `NO_PROXY`
-when a corporate command must bypass Rash.
-
-Another active proxy VPN or network extension can override this setting. In
-that case, `clrs system-proxy status` reports the override; stop the other
-proxy client before testing Rash.
-
-Add `--select` to choose a member of the configured Selector group during
-startup. Rash tests all candidates, marks the current/default member, and
-pressing Return keeps that default. Run `clrs select` to switch later. A Yacd
-selection is immediately reflected by both status commands:
-
-```text
-Connection: Proxy -> VPS-Reality
+```zsh
+clrs system-proxy on --service "USB 10/100/1000 LAN"
 ```
 
-The selection is stored by Clash RS, so the current member—not necessarily the
-first configured member—becomes the next prompt's default.
+Another VPN or network extension can override the effective system proxy.
+Rash reports that condition instead of claiming the setting is active.
 
-For OpenVPN and Cisco Secure Client coexistence, connect the organization VPN
-first, then run `clrs start --config SG --select --system-proxy`. Regular mode
-does not create a tunnel, replace routes, or hijack DNS, so the VPN keeps
-ownership of its private routes and resolvers. Re-run `clrs system-proxy
-status` after the VPN reconnects because a network extension may replace
+## OpenVPN and Cisco Secure Client
+
+Connect the organization VPN first, then start Rash in regular mode:
+
+```zsh
+clrs start --config SG --select --system-proxy
+```
+
+Rash does not create a tunnel, replace routes, or hijack system DNS, so the VPN
+keeps ownership of private routes and resolvers. Re-run `clrs system-proxy
+status` after the VPN reconnects because its network extension may replace
 macOS proxy settings.
 
-TUN mode is intentionally unsupported. Live macOS testing found repeatable,
-application-specific TLS timeouts in both the stable userspace stack and an
-unmerged system-stack implementation, while the same requests succeeded
-through the local mixed proxy. `clrs start ... --tun` therefore exits without
-starting Clash RS. Rash will reconsider TUN after the upstream implementation
-has matured and received reliable macOS coverage.
+Terminal programs do not consistently read the macOS proxy. Run one command
+through Rash:
 
-`clrs attach` opens the tmux session. Detach without stopping it by pressing
-`Ctrl-b`, then `d`. If Clash RS exits unexpectedly, the session stays open so
-`clrs logs` and `clrs attach` retain the error.
+```zsh
+clrs exec -- git pull
+```
 
-## Controller and UI security
+Or configure the current shell until you clear it:
 
-At startup, `clrs` creates a private runtime copy of the selected profile. It
-injects a loopback-only controller, the vendored UI path, and a random
-per-project controller secret. Runtime files, tmux sockets, caches, and the
-secret live under ignored `.clrs/` with restrictive permissions.
+```zsh
+eval "$(clrs env)"
+eval "$(clrs env --unset)"
+```
 
-Open `http://127.0.0.1:9090/ui/` with `clrs ui`. If Yacd asks for the API
-secret, run `clrs secret`. Do not expose port `9090` outside the machine.
+Add organization-specific hosts to `NO_PROXY`, and keep private destinations
+on `DIRECT` rules, when corporate traffic must bypass the public proxy.
 
-## Validate a profile manually
+## Runtime assets and releases
+
+`./scripts/download-assets.zsh` installs and verifies:
+
+- `bin/clash` — the matching Clash RS `v0.10.8` executable
+- `assets/yacd-meta/` — a pinned Yacd-meta `gh-pages` snapshot
+- `assets/geoip/Country.mmdb` — the pinned GeoIP database used by `GEOIP` rules
+
+The current dependency bundle is attached to release
+[`v1.1.0`](https://github.com/Aethergrids/Rash/releases/tag/v1.1.0). It contains
+Clash RS binaries for macOS and Linux on arm64 and x86_64, Yacd-meta, upstream
+license files, provenance metadata, and `SHA256SUMS`. The downloader verifies
+every mirrored file before installation. GeoIP is fetched from its pinned
+upstream release and verified against a repository-pinned SHA-256 digest.
+
+To avoid duplicating large third-party binaries, dependency assets are retained
+only on the latest Rash release. Historical tags and release notes remain, but
+their bootstrap assets may be removed. Use the downloader from the latest
+checkout.
+
+Useful asset commands:
+
+```zsh
+./scripts/download-assets.zsh --only clash-rs --force
+./scripts/download-assets.zsh --only yacd-meta --force
+./scripts/download-assets.zsh --only geoip --force
+```
+
+`RASH_RELEASE_VERSION`, `RASH_ASSET_BASE_URL`, `CLASH_RS_VERSION`,
+`YACD_META_COMMIT`, `GEOIP_VERSION`, `GEOIP_SHA256`, and an optional
+`GITHUB_TOKEN` are supported overrides. Run
+`./scripts/download-assets.zsh --help` for details.
+
+## Controller security
+
+At startup, Rash creates a private runtime copy of the chosen profile. It
+injects a loopback-only controller, the vendored UI path, the local MMDB path,
+and a random per-project controller secret. Runtime files, tmux sockets,
+caches, and secrets live under ignored `.clrs/` with restrictive permissions.
+
+Do not expose port `9090` outside the machine. If Yacd-meta asks for the API
+secret, run `clrs secret`.
+
+## TUN status
+
+`clrs start ... --tun` exits without starting Clash RS. Live macOS tests found
+selective TLS timeouts in both the stable userspace stack and an unmerged
+system-stack implementation while the same requests succeeded through the
+mixed proxy. Rash will reconsider TUN when upstream macOS behavior is mature
+and reliably covered.
+
+## Validate a profile
+
+The launcher strictly validates a private runtime copy on every start. To check
+a profile manually:
 
 ```zsh
 ./bin/clash --directory "$PWD/configs/JP" \
@@ -179,8 +213,8 @@ secret, run `clrs secret`. Do not expose port `9090` outside the machine.
   --test-config --strict-config
 ```
 
-Strict parser success confirms schema compatibility, not that remote proxy
-credentials or live connectivity work.
+Parser success confirms schema compatibility, not remote credentials or live
+connectivity. `HANDOFF.md` contains a concise, privacy-safe smoke-test workflow.
 
 ## License
 

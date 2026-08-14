@@ -2,6 +2,7 @@
 
 # Downloaded executable assets are reproducible via scripts/download-assets.zsh.
 /bin/
+/assets/geoip/
 
 # Profiles contain user credentials and must never be committed.
 /*.[Yy][Aa][Mm][Ll]

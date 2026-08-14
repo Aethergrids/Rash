@@ -8,9 +8,13 @@ typeset -gr PROJECT_ROOT="${SCRIPT_PATH:h:h}"
 typeset -gr DEFAULT_RASH_RELEASE_VERSION="v1.0.0"
 typeset -gr DEFAULT_CLASH_RS_VERSION="v0.10.8"
 typeset -gr DEFAULT_YACD_META_COMMIT="ba5f198831a1ea984cf2f46c6c0d66325fde7022"
+typeset -gr DEFAULT_GEOIP_VERSION="202608130025"
+typeset -gr DEFAULT_GEOIP_SHA256="2e81dcd2703da6efa667865a01dc73ec97304d66bc925d67a5d2ffd412291ca2"
 typeset -gr RASH_REPOSITORY="Aethergrids/Rash"
+typeset -gr GEOIP_REPOSITORY="Loyalsoldier/geoip"
 typeset -gr CHECKSUMS_ASSET_NAME="SHA256SUMS"
 typeset -gr YACD_META_ASSET_NAME="yacd-meta-gh-pages.zip"
+typeset -gr GEOIP_ASSET_NAME="Country.mmdb"
 
 typeset -gr CURL_BIN="${CURL_BIN:-${commands[curl]:-/usr/bin/curl}}"
 typeset -gr UNZIP_BIN="${UNZIP_BIN:-${commands[unzip]:-/usr/bin/unzip}}"
@@ -18,6 +22,8 @@ typeset -gr UNZIP_BIN="${UNZIP_BIN:-${commands[unzip]:-/usr/bin/unzip}}"
 typeset rash_release_version="${RASH_RELEASE_VERSION:-$DEFAULT_RASH_RELEASE_VERSION}"
 typeset clash_rs_version="${CLASH_RS_VERSION:-$DEFAULT_CLASH_RS_VERSION}"
 typeset yacd_meta_commit="${YACD_META_COMMIT:-$DEFAULT_YACD_META_COMMIT}"
+typeset geoip_version="${GEOIP_VERSION:-$DEFAULT_GEOIP_VERSION}"
+typeset geoip_sha256="${GEOIP_SHA256:-$DEFAULT_GEOIP_SHA256}"
 typeset asset_base_url_override="${RASH_ASSET_BASE_URL:-}"
 typeset requested_asset="all"
 typeset force="false"
@@ -27,7 +33,7 @@ typeset checksum_manifest=""
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/download-assets.zsh [--only all|clash-rs|yacd-meta]
+  scripts/download-assets.zsh [--only all|clash-rs|yacd-meta|geoip]
                               [--release-version v1.0.0]
                               [--clash-version v0.10.8]
                               [--force]
@@ -37,6 +43,8 @@ Environment overrides:
   RASH_ASSET_BASE_URL   Alternate release/mirror base URL
   CLASH_RS_VERSION      Expected Clash RS version in that release
   YACD_META_COMMIT      Expected Yacd-meta source commit
+  GEOIP_VERSION         Pinned Loyalsoldier/geoip release tag
+  GEOIP_SHA256          SHA-256 for that release's Country.mmdb
   GITHUB_TOKEN          Optional token for GitHub downloads
 EOF
 }
@@ -221,10 +229,42 @@ download_yacd_meta() {
   print -r -- "Installed Yacd-meta ${yacd_meta_commit[1,12]} at $destination"
 }
 
+download_geoip() {
+  local destination="${PROJECT_ROOT}/assets/geoip/${GEOIP_ASSET_NAME}"
+  local download_path="${temporary_root}/${GEOIP_ASSET_NAME}"
+  local download_url="https://github.com/${GEOIP_REPOSITORY}/releases/download/${geoip_version}/${GEOIP_ASSET_NAME}"
+  local installed_digest=""
+  local downloaded_digest
+
+  if [[ -r "$destination" ]]; then
+    installed_digest="$(sha256_file "$destination")"
+  fi
+  if [[ "$force" != "true" && "$installed_digest" == "$geoip_sha256" ]]; then
+    print -r -- "GeoIP ${geoip_version} is already installed at $destination"
+    return 0
+  fi
+
+  print -r -- "Downloading $download_url"
+  github_curl "$download_url" >| "$download_path"
+  downloaded_digest="$(sha256_file "$download_path")"
+  [[ "$downloaded_digest" == "$geoip_sha256" ]] || \
+    die "SHA-256 mismatch for ${GEOIP_ASSET_NAME}"
+
+  mkdir -p "${destination:h}"
+  mv -f "$download_path" "$destination"
+  {
+    print -r -- "repository=https://github.com/${GEOIP_REPOSITORY}"
+    print -r -- "release=${geoip_version}"
+    print -r -- "asset=${GEOIP_ASSET_NAME}"
+    print -r -- "sha256=${geoip_sha256}"
+  } >| "${destination:h}/.rash-source"
+  print -r -- "Installed GeoIP ${geoip_version} at $destination"
+}
+
 while (( $# > 0 )); do
   case "$1" in
     --only)
-      (( $# >= 2 )) || die "--only requires all, clash-rs, or yacd-meta"
+      (( $# >= 2 )) || die "--only requires all, clash-rs, yacd-meta, or geoip"
       requested_asset="$2"
       shift 2
       ;;
@@ -251,16 +291,26 @@ while (( $# > 0 )); do
 done
 
 case "$requested_asset" in
-  all|clash-rs|yacd-meta) ;;
-  *) die "--only must be all, clash-rs, or yacd-meta" ;;
+  all|clash-rs|yacd-meta|geoip) ;;
+  *) die "--only must be all, clash-rs, yacd-meta, or geoip" ;;
 esac
 
 require_executable "$CURL_BIN" "curl"
-[[ "$requested_asset" == "clash-rs" ]] || require_executable "$UNZIP_BIN" "unzip"
+if [[ "$requested_asset" == "all" || "$requested_asset" == "yacd-meta" ]]; then
+  require_executable "$UNZIP_BIN" "unzip"
+fi
 
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/rash-assets.XXXXXX")"
 checksum_manifest="${temporary_root}/${CHECKSUMS_ASSET_NAME}"
 trap cleanup EXIT INT TERM HUP
 
-[[ "$requested_asset" == "yacd-meta" ]] || download_clash_rs
-[[ "$requested_asset" == "clash-rs" ]] || download_yacd_meta
+case "$requested_asset" in
+  all)
+    download_clash_rs
+    download_yacd_meta
+    download_geoip
+    ;;
+  clash-rs) download_clash_rs ;;
+  yacd-meta) download_yacd_meta ;;
+  geoip) download_geoip ;;
+esac

@@ -4,7 +4,7 @@
 
 Prove that the existing private `JP` and `SG` profiles work with Clash RS,
 Yacd-meta, the macOS system proxy switch, and both HTTP and SOCKS5 proxy
-access. Test macOS TUN mode last.
+access. TUN mode is intentionally out of scope.
 
 ## Safety
 
@@ -91,10 +91,10 @@ is changed in Yacd, the next status command must show that change.
 Close Clash Verge Rev, Shadowrocket, or any other proxy VPN first, then run:
 
 ```zsh
-./clrs start --config JP
-./clrs system-proxy on
+./clrs start --config JP --system-proxy
 ./clrs system-proxy status
 /usr/sbin/scutil --proxy | sed -n '1,/__SCOPED__/p'
+./clrs exec -- git ls-remote https://github.com/Aethergrids/Rash.git HEAD
 ./clrs stop
 ./clrs system-proxy status || true
 ```
@@ -104,23 +104,18 @@ Expected result: the effective HTTP and HTTPS proxy is
 the Rash system proxy as off. Do not alter another proxy app's settings to
 force this check; report an override if the user has left one running.
 
-## TUN test
+## TUN exclusion
 
-After the regular test passes, stop other route-owning VPN clients and run:
+Confirm that the unsupported mode fails safely:
 
 ```zsh
 ./clrs start --config JP --tun
-ifconfig utun1989
-ALL_PROXY= HTTPS_PROXY= HTTP_PROXY= all_proxy= https_proxy= http_proxy= \
-  curl --noproxy '*' --fail --silent --show-error --output /dev/null \
-  --write-out 'TUN HTTP: %{http_code}\n' --max-time 20 \
-  https://www.gstatic.com/generate_204
-./clrs stop
+./clrs status || true
 ```
 
-Expected result: `utun1989` exists and the unconfigured curl request returns
-`TUN HTTP: 204`. If `sudo` cannot be used interactively, report TUN as blocked
-instead of bypassing the launcher.
+Expected result: the first command reports that TUN is unsupported and the
+second reports `Clash RS: stopped`. Do not bypass the launcher or test an
+experimental core.
 
 ## Report
 
@@ -130,6 +125,6 @@ Return only:
 - JP and SG result codes
 - Selector latency prompt and selected connection
 - system proxy on/effective/restored result
-- TUN pass/fail/blocked
+- TUN exclusion enforced/not enforced
 - whether `./clrs stop` left the service stopped
 - concise, redacted failure reasons

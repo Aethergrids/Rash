@@ -129,7 +129,7 @@ tmux_run() {
   socket="$(socket_for "$mode")"
 
   if [[ "$mode" == "tun" ]]; then
-    "$SUDO_BIN" "$TMUX_BIN" -S "$socket" "$@"
+    "$SUDO_BIN" /usr/bin/env TERM=xterm-256color "$TMUX_BIN" -S "$socket" "$@"
   else
     "$TMUX_BIN" -S "$socket" "$@"
   fi
@@ -781,7 +781,8 @@ attach_service() {
   socket="$(socket_for "$ACTIVE_MODE")"
 
   if [[ "$ACTIVE_MODE" == "tun" ]]; then
-    exec "$SUDO_BIN" "$TMUX_BIN" -S "$socket" attach-session -t "$SESSION_NAME"
+    exec "$SUDO_BIN" /usr/bin/env TERM=xterm-256color \
+      "$TMUX_BIN" -S "$socket" attach-session -t "$SESSION_NAME"
   else
     exec "$TMUX_BIN" -S "$socket" attach-session -t "$SESSION_NAME"
   fi

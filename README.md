@@ -4,9 +4,8 @@ Rash is a small, inspectable Clash RS launcher built around zsh and tmux. It
 runs a private Clash RS profile in the background, exposes a local HTTP/SOCKS5
 proxy, and serves Yacd-meta without installing a system daemon.
 
-Rash currently supports regular proxy mode only. TUN is intentionally disabled
-because Clash RS `v0.10.8` has shown repeatable, application-specific failures
-on macOS even when mixed-proxy traffic is healthy.
+Rash supports HTTP/SOCKS5 proxy access and optional macOS system proxy settings.
+TUN has been removed from the project.
 
 ## Quick start
 
@@ -24,8 +23,7 @@ cd Rash
 ./scripts/download-assets.zsh
 ```
 
-Place a Clash RS-compatible profile at `configs/JP/config.yaml` or
-`configs/SG/config.yaml`, then start Rash:
+Place a Clash RS-compatible profile at `configs/SG/config.yaml`, then start Rash:
 
 ```zsh
 ./clrs start --config SG --select --system-proxy
@@ -57,11 +55,10 @@ is static content served by Clash RS, not a second daemon.
 
 ## Private profiles
 
-No working profile or credentials are published. The launcher accepts these
-local paths:
+No working profile or credentials are published. The launcher accepts this
+local path:
 
 ```text
-configs/JP/config.yaml
 configs/SG/config.yaml
 ```
 
@@ -77,11 +74,11 @@ intentionally. Never use `git add -f` for these files.
 
 | Command | Purpose |
 | --- | --- |
-| `clrs start --config JP` | Start one profile without changing macOS proxy settings |
+| `clrs start --config SG` | Start one profile without changing macOS proxy settings |
 | `clrs start --config SG --select` | Start and choose a Selector member after latency tests |
 | `clrs start --config SG --select --system-proxy` | Start and enable the default `Wi-Fi` HTTP/HTTPS proxy |
 | `clrs select` | Change the active Selector member |
-| `clrs status` | Show the profile, mode, UI URL, and selected connection |
+| `clrs status` | Show the profile, UI URL, and selected connection |
 | `clrs system-proxy status` | Show Rash and effective macOS proxy state |
 | `clrs system-proxy on\|off` | Enable or restore macOS proxy settings |
 | `clrs exec -- COMMAND` | Run a terminal command through Rash |
@@ -194,13 +191,15 @@ caches, and secrets live under ignored `.clrs/` with restrictive permissions.
 Do not expose port `9090` outside the machine. If Yacd-meta asks for the API
 secret, run `clrs secret`.
 
-## TUN status
+## Supported scope
 
-`clrs start ... --tun` exits without starting Clash RS. Live macOS tests found
-selective TLS timeouts in both the stable userspace stack and an unmerged
-system-stack implementation while the same requests succeeded through the
-mixed proxy. Rash will reconsider TUN when upstream macOS behavior is mature
-and reliably covered.
+Rash runs a user-owned tmux session with HTTP/SOCKS5 listeners. TUN, route
+management, and DNS hijacking are outside the project's feature set.
+`--tun` is not a recognized option, and runtime rendering removes any `tun`
+section from imported profiles. The bundled Yacd settings page has no TUN
+panel; the asset downloader reapplies this change after a dashboard refresh.
+The historical investigation and removal decision are recorded in
+[`TEST_RESULTS.md`](TEST_RESULTS.md).
 
 ## Validate a profile
 
@@ -208,8 +207,8 @@ The launcher strictly validates a private runtime copy on every start. To check
 a profile manually:
 
 ```zsh
-./bin/clash --directory "$PWD/configs/JP" \
-  --config "$PWD/configs/JP/config.yaml" \
+./bin/clash --directory "$PWD/configs/SG" \
+  --config "$PWD/configs/SG/config.yaml" \
   --test-config --strict-config
 ```
 

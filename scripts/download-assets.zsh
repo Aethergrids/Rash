@@ -193,6 +193,32 @@ download_clash_rs() {
   print -r -- "Installed $version_output at $destination"
 }
 
+remove_yacd_tun_card() {
+  local destination="$1"
+  local bundle="${destination}/assets/index-CJUkmLR8.js"
+  local original_digest="4aa7cd7ca0a9f9f247baa6e24a77c7caff77176fd5ddb50302c05f0edf79257b"
+  local patched_digest="b66cb471007672a22ead9389a02972768d556636f67249aa01601c436a2ffdc1"
+  local digest
+  local contents
+  local card
+  local patched_bundle="${temporary_root}/yacd-without-tun.js"
+
+  [[ -r "$bundle" ]] || die "Yacd-meta bundle does not match the pinned TUN removal patch"
+  digest="$(sha256_file "$bundle")"
+  [[ "$digest" == "$patched_digest" ]] && return 0
+  [[ "$digest" == "$original_digest" ]] || \
+    die "Yacd-meta bundle changed; review the TUN removal patch before updating"
+
+  card="$(<"${PROJECT_ROOT}/scripts/yacd-meta-tun-card.txt")"
+  contents="$(<"$bundle")"
+  [[ -n "$card" && "$contents" == *"$card"* ]] || die "Yacd-meta TUN card was not found"
+  print -rn -- "${contents/"$card"/null}" >| "$patched_bundle"
+  [[ "$(sha256_file "$patched_bundle")" == "$patched_digest" ]] || \
+    die "Yacd-meta TUN removal checksum mismatch"
+  chmod 644 "$patched_bundle"
+  mv -f "$patched_bundle" "$bundle"
+}
+
 download_yacd_meta() {
   local destination="${PROJECT_ROOT}/assets/yacd-meta"
   local archive_path="${temporary_root}/${YACD_META_ASSET_NAME}"
@@ -200,6 +226,11 @@ download_yacd_meta() {
   local -a extracted_directories
 
   if [[ "$force" != "true" && -r "${destination}/index.html" ]]; then
+    remove_yacd_tun_card "$destination"
+    if [[ -r "${destination}/.rash-source" && \
+          "$(<"${destination}/.rash-source")" != *'local-modification=remove-tun-card'* ]]; then
+      print -r -- "local-modification=remove-tun-card" >> "${destination}/.rash-source"
+    fi
     print -r -- "Yacd-meta is already installed at $destination"
     return 0
   fi
@@ -210,6 +241,7 @@ download_yacd_meta() {
   extracted_directories=("$extract_dir"/*(/N))
   (( ${#extracted_directories} == 1 )) || \
     die "unexpected Yacd-meta archive layout"
+  remove_yacd_tun_card "${extracted_directories[1]}"
 
   mkdir -p "${PROJECT_ROOT}/assets"
   if [[ -e "$destination" ]]; then
@@ -223,6 +255,7 @@ download_yacd_meta() {
     print -r -- "commit=${yacd_meta_commit}"
     print -r -- "rash-release=${rash_release_version}"
     print -r -- "archive=$(release_asset_url "$YACD_META_ASSET_NAME")"
+    print -r -- "local-modification=remove-tun-card"
   } >| "${destination}/.rash-source"
 
   [[ -r "${destination}/index.html" ]] || die "Yacd-meta index.html is missing"

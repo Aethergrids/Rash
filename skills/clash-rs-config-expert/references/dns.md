@@ -1,6 +1,6 @@
 # DNS configuration
 
-Read this reference for the Clash RS DNS client/server, fake-IP routing, upstream selection, and TUN DNS interception.
+Read this reference for the Clash RS DNS client/server, fake-IP routing, and upstream selection.
 
 ## Contents
 
@@ -9,7 +9,6 @@ Read this reference for the Clash RS DNS client/server, fake-IP routing, upstrea
 - [Upstream resolvers](#upstream-resolvers)
 - [Resolution modes](#resolution-modes)
 - [Policies, fallback, and hosts](#policies-fallback-and-hosts)
-- [TUN integration](#tun-integration)
 - [Baseline example](#baseline-example)
 - [Troubleshooting](#troubleshooting)
 
@@ -35,7 +34,7 @@ Use only fields supported by the target version.
 | `edns-client-subnet` | mapping | Send optional IPv4/IPv6 ECS prefixes upstream |
 | `respect-rules` | boolean | Route normal upstream DNS traffic through the rule engine in current builds |
 
-Set both `enable: true` and `listen` when clients or TUN hijacking must query the local Clash RS DNS server.
+Set both `enable: true` and `listen` when clients must query the local Clash RS DNS server.
 
 ## Local DNS listeners
 
@@ -117,7 +116,7 @@ dns:
     - "router.example"
 ```
 
-- Keep the fake-IP range separate from TUN gateways, LANs, VPNs, and other routed networks.
+- Keep the fake-IP range separate from LANs, VPNs, and other routed networks.
 - Add only compatibility-sensitive domains to `fake-ip-filter`; broad filters reduce fake-IP benefits.
 - Enable `profile.store-fake-ip` only when mappings should persist across restarts.
 
@@ -174,34 +173,6 @@ dns:
 
 Do not use public host overrides for private services unless their lifecycle and ownership are clear.
 
-## TUN integration
-
-Pair fake-IP DNS and TUN using different address ranges:
-
-```yaml
-dns:
-  enable: true
-  listen: 127.0.0.1:53553
-  enhanced-mode: fake-ip
-  fake-ip-range: 198.18.0.2/16
-  default-nameserver:
-    - 1.1.1.1
-  nameserver:
-    - tls://1.1.1.1:853
-
-tun:
-  enable: true
-  gateway: 198.19.0.1/16
-  dns-hijack: true
-```
-
-Apply these rules:
-
-- Enable a local DNS listener before enabling TUN DNS hijacking.
-- Use a non-overlapping `tun.gateway` and `dns.fake-ip-range`.
-- Treat a `dns-hijack` address list as equivalent to all port-53 interception in the reviewed implementation.
-- Check that DNS upstream traffic does not loop back through the same unresolved route.
-
 ## Baseline example
 
 Start from this shape and replace resolvers or filters for the user's environment:
@@ -239,7 +210,7 @@ Diagnose in this order:
 3. Query the listener directly over the configured protocol.
 4. Test each upstream from the Clash RS host without the proxy.
 5. Confirm bootstrap resolution for any DoH/DoT hostname.
-6. Inspect fake-IP and TUN ranges for overlap.
+6. Inspect the fake-IP range for overlap with local networks.
 7. Add one failing domain to `fake-ip-filter` only to prove a compatibility issue.
 8. Check `nameserver-policy`, fallback filters, and routing rules for unintended capture.
 9. Enable `log-level: debug` temporarily and remove it after diagnosis.

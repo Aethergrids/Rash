@@ -3,6 +3,13 @@
 Rash is a small zsh/tmux launcher for Clash RS with a vendored Yacd-meta web
 UI. Make focused changes and keep the launcher understandable.
 
+## Supported scope
+
+Rash supports HTTP/SOCKS5 proxy access and optional macOS system proxy settings.
+TUN has been removed. Do not add TUN presets, privileged tmux sessions, route
+management, or DNS hijacking. Keep runtime rendering's removal of imported
+`tun` sections so a source profile cannot activate the removed feature.
+
 ## Privacy boundary
 
 - Treat every user profile as secret-bearing.
@@ -36,6 +43,8 @@ binary with both `--test-config` and `--strict-config`.
 - `bin/` contains reproducible downloaded executables and stays untracked.
 - `assets/yacd-meta/` contains vendored static UI files and `.rash-source`
   provenance metadata. Release downloads must match `SHA256SUMS`.
+- The asset downloader removes the pinned Yacd TUN settings card after archive
+  verification. Preserve that local patch and its `.rash-source` provenance.
 - `.clrs/` contains private runtime state and stays untracked.
 
 Run `zsh -n clrs scripts/*.zsh` after shell changes. Run the asset downloader,

@@ -3,3 +3,4 @@ branch=gh-pages
 commit=ba5f198831a1ea984cf2f46c6c0d66325fde7022
 rash-release=v1.1.0
 archive=https://github.com/Aethergrids/Rash/releases/download/v1.1.0/yacd-meta-gh-pages.zip
+local-modification=remove-tun-card

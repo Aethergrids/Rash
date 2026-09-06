@@ -23,3 +23,10 @@ The release includes the upstream license as `clash-rs-LICENSE`.
 
 Yacd-meta is derived from <https://github.com/haishanh/yacd>. The release
 includes its MIT license as `yacd-meta-LICENSE`.
+
+Rash's local dashboard removes the TUN settings card from the pinned bundle.
+`scripts/download-assets.zsh` applies this modification after verifying the
+upstream archive, checks the original and modified bundle hashes, and records
+it in `.rash-source`. `scripts/yacd-meta-tun-card.txt` contains the upstream
+card expression removed by the patch. Mirrored release archives remain
+unmodified.

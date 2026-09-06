@@ -2,6 +2,7 @@
 #
 # Copy this file to configs/<PROFILE>/config.yaml, then replace or add the
 # user's real proxies. Never commit the resulting YAML file.
+# Rash uses regular proxy listeners only; omit TUN configuration.
 
 mixed-port: 7890
 allow-lan: false

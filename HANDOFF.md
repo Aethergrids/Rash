@@ -2,9 +2,11 @@
 
 ## Goal
 
-Prove that the existing private `JP` and `SG` profiles work with Clash RS,
+Prove that the private `SG` profile works with Clash RS,
 Yacd-meta, the macOS system proxy switch, and both HTTP and SOCKS5 proxy
-access. TUN mode is intentionally out of scope.
+access. Rash supports regular proxy access only.
+
+The historical investigation and TUN removal decision are in `TEST_RESULTS.md`.
 
 ## Safety
 
@@ -23,7 +25,6 @@ Run from the repository root:
 set -eu
 
 ./scripts/download-assets.zsh
-test -r configs/JP/config.yaml
 test -r configs/SG/config.yaml
 
 cleanup() {
@@ -31,7 +32,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-for profile in JP SG; do
+for profile in SG; do
   ./clrs start --config "$profile"
   ./clrs status
 
@@ -63,7 +64,7 @@ done
 trap - EXIT INT TERM HUP
 ```
 
-Expected result for both profiles:
+Expected result for SG:
 
 ```text
 controller=200 ui=200 http=204 socks5=204
@@ -74,7 +75,7 @@ controller=200 ui=200 http=204 socks5=204
 Run this part interactively:
 
 ```zsh
-./clrs start --config JP --select
+./clrs start --config SG --select
 ./clrs status
 ./clrs system-proxy status || true
 ./clrs select
@@ -91,7 +92,7 @@ is changed in Yacd, the next status command must show that change.
 Close Clash Verge Rev, Shadowrocket, or any other proxy VPN first, then run:
 
 ```zsh
-./clrs start --config JP --system-proxy
+./clrs start --config SG --system-proxy
 ./clrs system-proxy status
 /usr/sbin/scutil --proxy | sed -n '1,/__SCOPED__/p'
 ./clrs exec -- git ls-remote https://github.com/Aethergrids/Rash.git HEAD
@@ -104,27 +105,29 @@ Expected result: the effective HTTP and HTTPS proxy is
 the Rash system proxy as off. Do not alter another proxy app's settings to
 force this check; report an override if the user has left one running.
 
-## TUN exclusion
+## Removed option
 
-Confirm that the unsupported mode fails safely:
+Confirm that the removed option is rejected before startup:
 
 ```zsh
-./clrs start --config JP --tun
+./clrs start --config SG --tun
 ./clrs status || true
 ```
 
-Expected result: the first command reports that TUN is unsupported and the
-second reports `Clash RS: stopped`. Do not bypass the launcher or test an
-experimental core.
+Expected result: the first command reports `unknown start option: --tun` and
+the second reports `Clash RS: stopped`. TUN is no longer a project feature.
+In Yacd's settings page, confirm that ordinary proxy settings remain available
+and there is no TUN panel. The asset downloader must preserve this removal
+after `--only yacd-meta --force`.
 
 ## Report
 
 Return only:
 
 - Clash RS version
-- JP and SG result codes
+- SG result codes
 - Selector latency prompt and selected connection
 - system proxy on/effective/restored result
-- TUN exclusion enforced/not enforced
+- removed option rejected before startup
 - whether `./clrs stop` left the service stopped
 - concise, redacted failure reasons

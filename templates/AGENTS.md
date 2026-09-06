@@ -18,7 +18,9 @@ When a user places a profile here and asks for a Clash RS version:
    `linkedin.cn` must use `Proxy`. Routing is not an HTTP redirect, so do not
    fake a redirect with DNS host rewriting.
 5. Write the result to `../configs/<PROFILE>/config.yaml`, with a short,
-   uppercase profile name such as `JP` or `SG`. Do not alter the input file.
+   uppercase profile name; the launcher currently accepts `SG`. Do not alter
+   the input file. Omit `tun` from the output: Rash supports regular proxy
+   access only and does not manage routes or hijack system DNS.
 6. Validate against this project's binary:
 
    ```zsh

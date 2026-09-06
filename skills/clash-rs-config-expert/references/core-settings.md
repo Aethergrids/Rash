@@ -1,6 +1,6 @@
-# Core settings, listeners, and TUN
+# Core settings and listeners
 
-Read this reference for top-level configuration, inbound exposure, controllers, databases, profiles, and transparent routing.
+Read this reference for top-level configuration, inbound exposure, controllers, databases, and profiles.
 
 ## Contents
 
@@ -9,8 +9,6 @@ Read this reference for top-level configuration, inbound exposure, controllers, 
 - [Explicit listeners](#explicit-listeners)
 - [Controller and file settings](#controller-and-file-settings)
 - [Profiles and experimental settings](#profiles-and-experimental-settings)
-- [TUN schema](#tun-schema)
-- [Platform and security checks](#platform-and-security-checks)
 
 ## Top-level map
 
@@ -36,7 +34,7 @@ Use kebab-case keys.
 | `hosts` | domain-to-address map | Override host resolution when `dns.use-hosts` is enabled |
 | `mmdb`, `asn-mmdb`, `geosite` | path | Point to GeoIP, ASN, and geosite databases |
 | `*-download-url` | URL | Download the corresponding database when supported |
-| `ipv6` | boolean | Control IPv6 capability; coordinate with `dns.ipv6` and TUN IPv6 |
+| `ipv6` | boolean | Control IPv6 capability; coordinate with `dns.ipv6` |
 | `external-controller` | address | Expose the REST controller |
 | `external-controller-ipc` | path | Configure controller IPC; platform aliases may differ |
 | `external-ui` | path | Locate dashboard files relative to the working directory |
@@ -48,7 +46,6 @@ Use kebab-case keys.
 | `proxy-providers` | map | Load outbound lists from HTTP or files |
 | `rule-providers` | map | Load or embed routing rule sets |
 | `experimental` | mapping | Configure explicitly documented experimental behavior |
-| `tun` | mapping | Create a layer-3 transparent-routing interface |
 | `listeners` | list | Define named inbound listeners; take precedence over shortcuts |
 | `inbound-providers` | map | Load listener definitions in current builds; verify target support |
 
@@ -162,45 +159,3 @@ experimental:
 ```
 
 Do not copy unrelated experimental keys from other Clash implementations.
-
-## TUN schema
-
-Use TUN when applications cannot be configured to use an HTTP or SOCKS proxy, or when the host must act as a transparent gateway.
-
-| TUN key | Shape | Meaning |
-| --- | --- | --- |
-| `enable` | boolean | Enable TUN |
-| `device-id` | string | Device name or `dev://`/`fd://` identifier; aliases include `device` and `device-url` |
-| `gateway` | IPv4 CIDR | Assign the TUN IPv4 gateway; reviewed default is `198.18.0.1/24` |
-| `gateway-v6` | IPv6 CIDR | Enable an IPv6 gateway |
-| `routes` | CIDR list | Add selected routes |
-| `route-all` | boolean | Route all traffic instead of enumerating routes |
-| `mtu` | integer | Override TUN MTU |
-| `so-mark` | integer | Set a Linux packet mark for TUN outbound handling |
-| `route-table` | integer | Select the Linux policy-routing table; reviewed default is `2468` |
-| `dns-hijack` | boolean or string list | Intercept port 53 and send it to Clash RS DNS |
-
-Use a non-overlapping TUN and fake-IP range:
-
-```yaml
-tun:
-  enable: true
-  device-id: "utun1989"
-  gateway: 198.19.0.1/16
-  route-all: true
-  dns-hijack: true
-```
-
-Pair DNS hijacking with an enabled local Clash RS DNS listener. Do not use `198.18.0.0/16` for both the TUN gateway and fake-IP pool.
-
-Treat a `dns-hijack` list as compatibility syntax, not a precise destination allowlist, unless the installed version proves otherwise.
-
-## Platform and security checks
-
-- On macOS, use a device name beginning with `utun`.
-- On Linux, grant only the required network capability, commonly `CAP_NET_ADMIN`, or run with equivalent privileges.
-- On Windows, place the matching `wintun.dll` beside the binary and run with the required administrator privileges.
-- Prevent loops by exempting Clash RS's own outbound traffic through marks, routing policy, or topology appropriate to the platform.
-- Check the TUN gateway, fake-IP pool, LAN subnets, VPN ranges, Docker networks, and corporate routes for overlap.
-- Start with selected routes when `route-all` would risk losing remote access.
-- Preserve a recovery path before applying gateway or remote-host routing changes.

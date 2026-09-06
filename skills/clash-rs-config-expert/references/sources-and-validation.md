@@ -20,7 +20,6 @@ The user manual states that it contains AI-generated content and may not be full
 - [General configuration](https://watfaq.gitbook.io/clashrs-user-manual/using-it/configuration/general-configs.md)
 - [Outbound proxies](https://watfaq.gitbook.io/clashrs-user-manual/using-it/configuration/outbounds.md)
 - [Traffic routing rules](https://watfaq.gitbook.io/clashrs-user-manual/using-it/configuration/rules.md)
-- [TUN configuration](https://watfaq.gitbook.io/clashrs-user-manual/using-it/configuration/tun.md)
 - [Remote content](https://watfaq.gitbook.io/clashrs-user-manual/using-it/configuration/remote-content.md)
 - [DNS configuration](https://watfaq.gitbook.io/clashrs-user-manual/using-it/configuration/dns.md)
 - [Generated Rust configuration reference](https://watfaq.github.io/clash-rs/clash_doc/)
@@ -85,7 +84,6 @@ After parser validation, test only the paths relevant to the request:
 - Confirm DNS returns expected real or fake answers.
 - Confirm representative destinations hit the intended rules.
 - Confirm health checks can reach their URLs.
-- Confirm TUN routes do not capture the proxy's own outbound connection.
 - Confirm controller authentication before any non-loopback exposure.
 
 Do not claim connectivity from a parser-only test.
@@ -98,7 +96,6 @@ Treat these as warnings tied to the reviewed commit, not timeless guarantees:
 - Current proxy-provider health checks define `enable`, `url`, `interval`, and optional `lazy`; some manual examples show an additional `timeout`.
 - Current `url-test` group definitions do not include a `timeout` key, although a manual example shows one. A local Clash RS 0.10.8 strict test accepted that key, demonstrating that parser acceptance can still mean silent non-application.
 - The top-level `interface` key is parsed but marked not implemented in the reviewed source.
-- A TUN `dns-hijack` list is parsed, but the reviewed implementation documents the list as having the same all-port-53 effect as `true`.
 - `dns.enable: true` without `dns.listen` does not start the local DNS server in the reviewed source.
 - Some protocols and listeners are compile-time features; documentation coverage does not prove the target binary includes them.
 

@@ -10,7 +10,6 @@ typeset -gr STATE_FILE="${STATE_DIR}/state"
 typeset -gr SECRET_FILE="${STATE_DIR}/controller-secret"
 typeset -gr SYSTEM_PROXY_STATE_FILE="${STATE_DIR}/system-proxy-state"
 typeset -gr USER_SOCKET="${STATE_DIR}/tmux.sock"
-typeset -gr ROOT_SOCKET="${STATE_DIR}/tmux-root.sock"
 typeset -gr SESSION_NAME="clrs"
 typeset -gr SESSION_RUNNER="${PROJECT_ROOT}/scripts/clrs-session.zsh"
 typeset -gr YACD_DIR="${PROJECT_ROOT}/assets/yacd-meta"
@@ -32,12 +31,10 @@ typeset -gr CURL_BIN="${CURL_BIN:-${commands[curl]:-/usr/bin/curl}}"
 typeset -gr LSOF_BIN="${LSOF_BIN:-${commands[lsof]:-/usr/sbin/lsof}}"
 typeset -gr OPENSSL_BIN="${OPENSSL_BIN:-${commands[openssl]:-/usr/bin/openssl}}"
 typeset -gr OPEN_BIN="${OPEN_BIN:-${commands[open]:-/usr/bin/open}}"
-typeset -gr SUDO_BIN="${SUDO_BIN:-${commands[sudo]:-/usr/bin/sudo}}"
 typeset -gr NETWORKSETUP_BIN="${NETWORKSETUP_BIN:-${commands[networksetup]:-/usr/sbin/networksetup}}"
 typeset -gr SCUTIL_BIN="${SCUTIL_BIN:-${commands[scutil]:-/usr/sbin/scutil}}"
 
 typeset ACTIVE_PROFILE=""
-typeset ACTIVE_MODE=""
 typeset PROXY_SERVICE=""
 typeset PREVIOUS_HTTP_ENABLED=""
 typeset PREVIOUS_HTTP_SERVER=""
@@ -49,7 +46,7 @@ typeset PREVIOUS_HTTPS_PORT=""
 usage() {
   cat <<'EOF'
 Usage:
-  clrs start --config JP|SG [--select] [--system-proxy]
+  clrs start --config SG [--select] [--system-proxy]
   clrs stop
   clrs status
   clrs select
@@ -64,9 +61,8 @@ Usage:
   clrs secret
 
 Examples:
-  clrs start --config JP
   clrs start --config SG
-  clrs start --config JP --select --system-proxy
+  clrs start --config SG --select --system-proxy
   clrs exec -- git pull
   eval "$(clrs env)"
 
@@ -102,8 +98,8 @@ ensure_dependencies() {
 normalize_profile() {
   local profile="${1:u}"
   case "$profile" in
-    JP|SG) print -r -- "$profile" ;;
-    *) die "--config must be JP or SG" ;;
+    SG) print -r -- "$profile" ;;
+    *) die "--config must be SG" ;;
   esac
 }
 
@@ -112,49 +108,32 @@ base_config_for() {
 }
 
 runtime_dir_for() {
-  print -r -- "${STATE_DIR}/runtime/${1:l}-$2"
+  print -r -- "${STATE_DIR}/runtime/${1:l}-proxy"
 }
 
 runtime_config_for() {
-  print -r -- "$(runtime_dir_for "$1" "$2")/config.yaml"
-}
-
-socket_for() {
-  if [[ "$1" == "tun" ]]; then
-    print -r -- "$ROOT_SOCKET"
-  else
-    print -r -- "$USER_SOCKET"
-  fi
+  print -r -- "$(runtime_dir_for "$1")/config.yaml"
 }
 
 tmux_run() {
-  local mode="$1"
-  shift
-  local socket
-  socket="$(socket_for "$mode")"
-
-  if [[ "$mode" == "tun" ]]; then
-    "$SUDO_BIN" /usr/bin/env TERM=xterm-256color "$TMUX_BIN" -S "$socket" "$@"
-  else
-    "$TMUX_BIN" -S "$socket" "$@"
-  fi
+  "$TMUX_BIN" -S "$USER_SOCKET" "$@"
 }
 
 tmux_has_session() {
-  tmux_run "$1" has-session -t "$SESSION_NAME" 2>/dev/null
+  tmux_run has-session -t "$SESSION_NAME" 2>/dev/null
 }
 
 read_state() {
   ACTIVE_PROFILE=""
-  ACTIVE_MODE=""
+  local stored_mode=""
   [[ -s "$STATE_FILE" ]] || return 1
-  IFS=: read -r ACTIVE_PROFILE ACTIVE_MODE < "$STATE_FILE"
-  [[ "$ACTIVE_PROFILE" == "JP" || "$ACTIVE_PROFILE" == "SG" ]] || return 1
-  [[ "$ACTIVE_MODE" == "proxy" || "$ACTIVE_MODE" == "tun" ]] || return 1
+  IFS=: read -r ACTIVE_PROFILE stored_mode < "$STATE_FILE"
+  [[ "$ACTIVE_PROFILE" == "SG" ]] || return 1
+  [[ "$stored_mode" == "proxy" ]] || return 1
 }
 
 write_state() {
-  print -r -- "$1:$2" >| "$STATE_FILE"
+  print -r -- "$1:proxy" >| "$STATE_FILE"
   chmod 600 "$STATE_FILE"
 }
 
@@ -257,7 +236,6 @@ system_proxy_on() {
     service="$2"
   fi
   require_active_session
-  [[ "$ACTIVE_MODE" == "proxy" ]] || die "system-proxy is unnecessary in TUN mode"
   if read_system_proxy_state; then
     proxy_is_rash "$PROXY_SERVICE" || die "system proxy settings changed externally"
     print -r -- "Rash system proxy is already on for $PROXY_SERVICE."
@@ -319,8 +297,8 @@ system_proxy_status() {
       print -r -- "Effective system proxy: overridden by another VPN or network extension"
   fi
 
-  if read_state && tmux_has_session "$ACTIVE_MODE"; then
-    show_runtime_connection
+  if read_state && tmux_has_session; then
+    show_selector_status
   fi
   return "$status_code"
 }
@@ -341,31 +319,20 @@ system_proxy_command() {
 
 render_runtime_config() {
   local profile="$1"
-  local mode="$2"
   local base_config
   local runtime_dir
   local runtime_config
   local temporary_config
-  local tun_filter="del(.tun)"
   local yq_filter
 
   base_config="$(base_config_for "$profile")"
-  runtime_dir="$(runtime_dir_for "$profile" "$mode")"
+  runtime_dir="$(runtime_dir_for "$profile")"
   runtime_config="${runtime_dir}/config.yaml"
 
   [[ -r "$base_config" ]] || die "missing base config: $base_config"
   mkdir -p "$runtime_dir"
   chmod 700 "$runtime_dir"
 
-  if [[ "$mode" == "tun" ]]; then
-    tun_filter='.tun = {
-      "enable": true,
-      "device-id": "utun1989",
-      "gateway": "198.19.0.1/16",
-      "route-all": true,
-      "dns-hijack": true
-    }'
-  fi
   temporary_config="$(mktemp "${runtime_dir}/config.yaml.XXXXXX")"
 
   yq_filter='.mmdb = strenv(CLRS_MMDB_PATH) |
@@ -373,8 +340,8 @@ render_runtime_config() {
     .["external-ui"] = strenv(CLRS_UI_DIR) |
     del(.["external-ui-url"]) |
     .profile["store-selected"] = true |
-    .secret = strenv(CLRS_SECRET_VALUE) | '
-  yq_filter+="$tun_filter"
+    .secret = strenv(CLRS_SECRET_VALUE) |
+    del(.tun)'
 
   CLRS_SECRET_VALUE="$(<"$SECRET_FILE")" \
   CLRS_UI_DIR="$YACD_DIR" \
@@ -411,12 +378,10 @@ assert_ports_available() {
 }
 
 capture_logs() {
-  local mode="$1"
-  tmux_run "$mode" capture-pane -p -J -t "${SESSION_NAME}:0.0" -S -200 2>/dev/null || true
+  tmux_run capture-pane -p -J -t "${SESSION_NAME}:0.0" -S -200 2>/dev/null || true
 }
 
 wait_for_api() {
-  local mode="$1"
   local secret
   local attempt
   secret="$(<"$SECRET_FILE")"
@@ -432,7 +397,7 @@ wait_for_api() {
   done
 
   print -u2 -r -- "clrs: Clash RS did not expose its controller within 30 seconds"
-  capture_logs "$mode" >&2
+  capture_logs >&2
   return 1
 }
 
@@ -492,17 +457,6 @@ show_selector_status() {
   done <<< "$rows"
 }
 
-show_runtime_connection() {
-  show_selector_status
-  if [[ "$ACTIVE_MODE" == "tun" ]]; then
-    if /sbin/ifconfig utun1989 >/dev/null 2>&1; then
-      print -r -- "TUN:        enabled (utun1989, route-all, DNS hijack)"
-    else
-      print -r -- "TUN:        configured, but utun1989 was not found"
-    fi
-  fi
-}
-
 measure_proxy_delay() {
   local proxy_name="$1"
   local encoded_name
@@ -557,7 +511,7 @@ proxy_member_detail() {
   proxy_type="$(PROXY_NAME="$proxy_name" print -r -- "$proxies_json" | \
     PROXY_NAME="$proxy_name" "$YQ_BIN" -p=json -r \
       '.proxies[strenv(PROXY_NAME)].type // "unknown"')"
-  runtime_config="$(runtime_config_for "$ACTIVE_PROFILE" "$ACTIVE_MODE")"
+  runtime_config="$(runtime_config_for "$ACTIVE_PROFILE")"
   if [[ -r "$runtime_config" ]]; then
     server="$(PROXY_NAME="$proxy_name" "$YQ_BIN" -r \
       '.proxies[] | select(.name == strenv(PROXY_NAME)) | .server // ""' \
@@ -674,7 +628,6 @@ select_proxy_interactive() {
 
 start_service() {
   local profile=""
-  local mode="proxy"
   local prompt_for_selector="false"
   local enable_system_proxy="false"
   local runtime_config
@@ -684,16 +637,13 @@ start_service() {
   while (( $# > 0 )); do
     case "$1" in
       --config|-c)
-        (( $# >= 2 )) || die "$1 requires JP or SG"
+        (( $# >= 2 )) || die "$1 requires SG"
         profile="$(normalize_profile "$2")"
         shift 2
         ;;
       --config=*)
         profile="$(normalize_profile "${1#*=}")"
         shift
-        ;;
-      --tun)
-        die "TUN mode is currently unsupported; use regular mode with --system-proxy"
         ;;
       --select)
         prompt_for_selector="true"
@@ -711,53 +661,42 @@ start_service() {
     esac
   done
 
-  [[ -n "$profile" ]] || die "start requires --config JP or --config SG"
+  [[ -n "$profile" ]] || die "start requires --config SG"
   [[ "$prompt_for_selector" != "true" || -t 0 ]] || \
     die "--select requires an interactive terminal"
-  [[ "$mode" != "tun" || "$(uname -s)" == "Darwin" ]] || \
-    die "this --tun preset is currently configured for macOS"
-  [[ "$enable_system_proxy" != "true" || "$mode" == "proxy" ]] || \
-    die "--system-proxy cannot be combined with --tun"
   [[ "$enable_system_proxy" != "true" || "$(uname -s)" == "Darwin" ]] || \
     die "--system-proxy is only supported on macOS"
   ensure_dependencies
   prepare_state_dir
   prepare_secret
 
-  if read_state && tmux_has_session "$ACTIVE_MODE"; then
-    die "$ACTIVE_PROFILE is already running in $ACTIVE_MODE mode; run 'clrs stop' first"
+  if read_state && tmux_has_session; then
+    die "$ACTIVE_PROFILE is already running; run 'clrs stop' first"
   fi
 
   assert_ports_available
-  runtime_config="$(render_runtime_config "$profile" "$mode")"
+  runtime_config="$(render_runtime_config "$profile")"
   runtime_dir="${runtime_config:h}"
 
   print -r -- "Validating ${profile} configuration..."
   validate_runtime_config "$runtime_config"
 
-  if [[ "$mode" == "tun" ]]; then
-    require_executable "$SUDO_BIN" "sudo"
-    print -r -- "TUN mode needs administrator access to create routes and utun1989."
-    "$SUDO_BIN" -v
-  fi
-
   command_line="${(q)SESSION_RUNNER} ${(q)CLASH_BIN} ${(q)runtime_dir} ${(q)runtime_config}"
-  tmux_run "$mode" new-session -d \
+  tmux_run new-session -d \
     -s "$SESSION_NAME" \
     -n clash-rs \
     -c "$runtime_dir" \
     "$command_line"
-  write_state "$profile" "$mode"
+  write_state "$profile"
 
-  if ! wait_for_api "$mode"; then
+  if ! wait_for_api; then
     print -u2 -r -- "Use 'clrs attach' to inspect the preserved tmux session."
     return 1
   fi
-  print -r -- "Clash RS started: profile=$profile mode=$mode"
+  print -r -- "Clash RS started: profile=$profile"
   print -r -- "Proxy: http://127.0.0.1:7890  (HTTP + SOCKS5)"
   print -r -- "Yacd:  $UI_URL"
   print -r -- "Tmux:  clrs attach"
-  [[ "$mode" == "tun" ]] && print -r -- "TUN:   utun1989, route-all, DNS hijack enabled"
 
   if ! wait_for_ui; then
     print -u2 -r -- "Yacd is still downloading; run 'clrs logs' or retry the UI shortly."
@@ -766,7 +705,7 @@ start_service() {
   if [[ "$prompt_for_selector" == "true" ]]; then
     select_proxy_interactive
   else
-    show_runtime_connection
+    show_selector_status
   fi
 
   if [[ "$enable_system_proxy" == "true" ]] && ! (system_proxy_command on); then
@@ -786,23 +725,23 @@ stop_service() {
     return 0
   fi
 
-  if ! tmux_has_session "$ACTIVE_MODE"; then
+  if ! tmux_has_session; then
     clear_state
     print -r -- "Clash RS is already stopped."
     return 0
   fi
 
-  print -r -- "Stopping $ACTIVE_PROFILE ($ACTIVE_MODE)..."
-  tmux_run "$ACTIVE_MODE" send-keys -t "${SESSION_NAME}:0.0" C-c
+  print -r -- "Stopping $ACTIVE_PROFILE..."
+  tmux_run send-keys -t "${SESSION_NAME}:0.0" C-c
 
   for attempt in {1..40}; do
-    tmux_has_session "$ACTIVE_MODE" || break
+    tmux_has_session || break
     sleep 0.25
   done
 
-  if tmux_has_session "$ACTIVE_MODE"; then
+  if tmux_has_session; then
     print -u2 -r -- "clrs: graceful shutdown timed out; closing the tmux session"
-    tmux_run "$ACTIVE_MODE" kill-session -t "$SESSION_NAME"
+    tmux_run kill-session -t "$SESSION_NAME"
   fi
 
   clear_state
@@ -811,42 +750,33 @@ stop_service() {
 
 status_service() {
   prepare_state_dir
-  if ! read_state || ! tmux_has_session "$ACTIVE_MODE"; then
+  if ! read_state || ! tmux_has_session; then
     print -r -- "Clash RS: stopped"
     return 1
   fi
 
   print -r -- "Clash RS: running"
   print -r -- "Profile:  $ACTIVE_PROFILE"
-  print -r -- "Mode:     $ACTIVE_MODE"
   print -r -- "Proxy:    http://127.0.0.1:7890"
   print -r -- "Yacd:     $UI_URL"
   print -r -- "Session:  $SESSION_NAME"
-  show_runtime_connection
+  show_selector_status
 }
 
 require_active_session() {
   prepare_state_dir
   read_state || die "Clash RS is not running"
-  tmux_has_session "$ACTIVE_MODE" || die "the recorded tmux session is no longer running"
+  tmux_has_session || die "the recorded tmux session is no longer running"
 }
 
 attach_service() {
   require_active_session
-  local socket
-  socket="$(socket_for "$ACTIVE_MODE")"
-
-  if [[ "$ACTIVE_MODE" == "tun" ]]; then
-    exec "$SUDO_BIN" /usr/bin/env TERM=xterm-256color \
-      "$TMUX_BIN" -S "$socket" attach-session -t "$SESSION_NAME"
-  else
-    exec "$TMUX_BIN" -S "$socket" attach-session -t "$SESSION_NAME"
-  fi
+  exec "$TMUX_BIN" -S "$USER_SOCKET" attach-session -t "$SESSION_NAME"
 }
 
 show_logs() {
   require_active_session
-  capture_logs "$ACTIVE_MODE"
+  capture_logs
 }
 
 open_ui() {

@@ -5,7 +5,7 @@ setopt pipe_fail
 
 typeset -gr SCRIPT_PATH="${0:A}"
 typeset -gr PROJECT_ROOT="${SCRIPT_PATH:h:h}"
-typeset -gr DEFAULT_RASH_RELEASE_VERSION="v1.1.0"
+typeset -gr DEFAULT_RASH_RELEASE_VERSION="v1.2.0"
 typeset -gr DEFAULT_CLASH_RS_VERSION="v0.10.8"
 typeset -gr DEFAULT_YACD_META_COMMIT="ba5f198831a1ea984cf2f46c6c0d66325fde7022"
 typeset -gr DEFAULT_GEOIP_VERSION="202608130025"
@@ -35,7 +35,7 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/download-assets.zsh [--only all|clash-rs|sing-box|yacd-meta|geoip]
-                              [--release-version v1.1.0]
+                              [--release-version v1.2.0]
                               [--clash-version v0.10.8]
                               [--force]
 

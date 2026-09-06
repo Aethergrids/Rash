@@ -189,7 +189,7 @@ on `DIRECT` rules, when corporate traffic must bypass the public proxy.
 - `assets/geoip/Country.mmdb` — the pinned GeoIP database used by `GEOIP` rules
 
 The current dependency bundle is attached to release
-[`v1.1.0`](https://github.com/Aethergrids/Rash/releases/tag/v1.1.0). It contains
+[`v1.2.0`](https://github.com/Aethergrids/Rash/releases/tag/v1.2.0). It contains
 Clash RS binaries for macOS and Linux on arm64 and x86_64, Yacd-meta, upstream
 license files, provenance metadata, and `SHA256SUMS`. The downloader verifies
 every mirrored file before installation. GeoIP is fetched from its pinned

@@ -18,6 +18,7 @@ typeset -gr GEOIP_ASSET_NAME="Country.mmdb"
 
 typeset -gr CURL_BIN="${CURL_BIN:-${commands[curl]:-/usr/bin/curl}}"
 typeset -gr UNZIP_BIN="${UNZIP_BIN:-${commands[unzip]:-/usr/bin/unzip}}"
+typeset -gr BREW_BIN="${BREW_BIN:-${commands[brew]:-}}"
 
 typeset rash_release_version="${RASH_RELEASE_VERSION:-$DEFAULT_RASH_RELEASE_VERSION}"
 typeset clash_rs_version="${CLASH_RS_VERSION:-$DEFAULT_CLASH_RS_VERSION}"
@@ -33,7 +34,7 @@ typeset checksum_manifest=""
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/download-assets.zsh [--only all|clash-rs|yacd-meta|geoip]
+  scripts/download-assets.zsh [--only all|clash-rs|sing-box|yacd-meta|geoip]
                               [--release-version v1.1.0]
                               [--clash-version v0.10.8]
                               [--force]
@@ -46,6 +47,10 @@ Environment overrides:
   GEOIP_VERSION         Pinned Loyalsoldier/geoip release tag
   GEOIP_SHA256          SHA-256 for that release's Country.mmdb
   GITHUB_TOKEN          Optional token for GitHub downloads
+  BREW_BIN              Homebrew executable (required to install sing-box)
+
+sing-box is installed with brew install sing-box on macOS and Linux.
+--force reinstalls an existing Homebrew sing-box installation.
 EOF
 }
 
@@ -160,6 +165,24 @@ clash_asset_name() {
     Linux:x86_64) print -r -- "clash-rs-x86_64-unknown-linux-gnu" ;;
     *) die "unsupported platform: ${operating_system} ${architecture}" ;;
   esac
+}
+
+download_sing_box() {
+  local prefix
+  local version_output
+  if "$BREW_BIN" list --versions sing-box >/dev/null 2>&1; then
+    if [[ "$force" == "true" ]]; then
+      "$BREW_BIN" reinstall sing-box
+    fi
+  else
+    "$BREW_BIN" install sing-box
+  fi
+  prefix="$("$BREW_BIN" --prefix sing-box)"
+  require_executable "${prefix}/bin/sing-box" "Homebrew sing-box"
+  version_output="$("${prefix}/bin/sing-box" version)"
+  [[ "$version_output" == *with_clash_api* ]] || \
+    die "sing-box requires the with_clash_api build tag for Rash controls and Yacd"
+  print -r -- "sing-box is installed at ${prefix}/bin/sing-box"
 }
 
 download_clash_rs() {
@@ -297,7 +320,7 @@ download_geoip() {
 while (( $# > 0 )); do
   case "$1" in
     --only)
-      (( $# >= 2 )) || die "--only requires all, clash-rs, yacd-meta, or geoip"
+      (( $# >= 2 )) || die "--only requires all, clash-rs, sing-box, yacd-meta, or geoip"
       requested_asset="$2"
       shift 2
       ;;
@@ -324,9 +347,23 @@ while (( $# > 0 )); do
 done
 
 case "$requested_asset" in
-  all|clash-rs|yacd-meta|geoip) ;;
-  *) die "--only must be all, clash-rs, yacd-meta, or geoip" ;;
+  all|clash-rs|sing-box|yacd-meta|geoip) ;;
+  *) die "--only must be all, clash-rs, sing-box, yacd-meta, or geoip" ;;
 esac
+
+case "$(uname -s)" in
+  Darwin|Linux) ;;
+  *) die "only macOS and Linux are supported" ;;
+esac
+
+if [[ "$requested_asset" == "all" || "$requested_asset" == "sing-box" ]]; then
+  [[ -n "$BREW_BIN" && -x "$BREW_BIN" ]] || \
+    die "Homebrew is required for sing-box; install it from https://brew.sh and add brew to PATH"
+fi
+if [[ "$requested_asset" == "sing-box" ]]; then
+  download_sing_box
+  exit 0
+fi
 
 require_executable "$CURL_BIN" "curl"
 if [[ "$requested_asset" == "all" || "$requested_asset" == "yacd-meta" ]]; then
@@ -339,6 +376,7 @@ trap cleanup EXIT INT TERM HUP
 
 case "$requested_asset" in
   all)
+    download_sing_box
     download_clash_rs
     download_yacd_meta
     download_geoip

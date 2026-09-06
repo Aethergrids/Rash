@@ -31,6 +31,11 @@ When a user places a profile here and asks for a Clash RS version:
 
 7. Report schema validation separately from live connectivity.
 
-Never commit or force-add any `.yaml` or `.yml` file below `templates/` or
+For sing-box, follow `../docs/sing-box-config.md` and use `sing-box.template`.
+Write native JSON to `../configs/<PROFILE>/sing-box.json` and validate with
+`sing-box check`. Preserve routing intent and credentials locally; report
+any behavior that cannot be represented instead of silently dropping it.
+
+Never commit or force-add any `.yaml`, `.yml`, or `.json` profile below `templates/` or
 `configs/`. Do not print credentials in command output, patches, diffs, commit
 messages, pull requests, or agent responses.

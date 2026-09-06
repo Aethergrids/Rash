@@ -13,6 +13,16 @@ one versioned, checksum-verified source.
 
 The release includes the upstream license as `clash-rs-LICENSE`.
 
+## sing-box
+
+- Project: <https://github.com/SagerNet/sing-box>
+- License: GPL-3.0-or-later (Homebrew formula metadata)
+- Installation: Homebrew's `sing-box` formula on macOS and Linux
+- Tested version: `1.14.0`, with Clash API support
+
+Rash does not mirror or bundle sing-box. `scripts/download-assets.zsh` uses
+`brew install sing-box` and lets Homebrew manage the installed version.
+
 ## Yacd-meta
 
 - Project: <https://github.com/MetaCubeX/Yacd-meta>

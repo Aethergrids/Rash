@@ -1,0 +1,13 @@
+# Rash owns its local listeners; source profiles supply DNS, outbounds and rules.
+del(.endpoints, .services, .experimental.v2ray_api) |
+.inbounds = [
+  {"type": "mixed", "tag": "rash-mixed", "listen": "127.0.0.1", "listen_port": 7890},
+  {"type": "direct", "tag": "rash-dns", "listen": "127.0.0.1", "listen_port": 1053}
+] |
+.route.rules = [{"inbound": ["rash-dns"], "action": "hijack-dns"}] + (.route.rules // []) |
+.experimental.clash_api.external_controller = "127.0.0.1:9090" |
+.experimental.clash_api.external_ui = strenv(RASH_UI_DIR) |
+.experimental.clash_api.secret = strenv(RASH_SECRET_VALUE) |
+del(.experimental.clash_api.external_ui_download_url, .experimental.clash_api.external_ui_download_detour) |
+.experimental.cache_file.enabled = true |
+.experimental.cache_file.path = "cache.db"

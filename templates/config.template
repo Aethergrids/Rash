@@ -10,7 +10,7 @@ bind-address: 127.0.0.1
 mode: rule
 log-level: warning
 
-# clrs injects the loopback controller, Yacd path, and a random secret into a
+# rash injects the loopback controller, Yacd path, and a random secret into a
 # private runtime copy. Keep those values out of reusable profile files.
 profile:
   store-selected: true

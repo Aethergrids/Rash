@@ -1,4 +1,5 @@
 .clrs/
+.rash/
 
 # Downloaded executable assets are reproducible via scripts/download-assets.zsh.
 /bin/
@@ -11,5 +12,10 @@
 /configs/**/*.[Yy][Mm][Ll]
 /templates/**/*.[Yy][Aa][Mm][Ll]
 /templates/**/*.[Yy][Mm][Ll]
+
+# Native sing-box profiles carry the same secrets as Clash YAML.
+/*.[Jj][Ss][Oo][Nn]
+/configs/
+/templates/**/*.[Jj][Ss][Oo][Nn]
 
 .DS_Store

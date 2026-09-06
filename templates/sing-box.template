@@ -1,0 +1,23 @@
+{
+  "log": {"level": "warn"},
+  "dns": {
+    "servers": [
+      {"type": "https", "tag": "remote", "server": "1.1.1.1"}
+    ],
+    "final": "remote"
+  },
+  "outbounds": [
+    {"type": "selector", "tag": "Proxy", "outbounds": ["DIRECT"], "default": "DIRECT"},
+    {"type": "direct", "tag": "DIRECT"}
+  ],
+  "route": {
+    "default_domain_resolver": "remote",
+    "rules": [
+      {"clash_mode": "Direct", "action": "route", "outbound": "DIRECT"},
+      {"clash_mode": "Global", "action": "route", "outbound": "Proxy"},
+      {"domain_suffix": ["linkedin.com", "linkedin.cn"], "action": "route", "outbound": "Proxy"},
+      {"ip_is_private": true, "action": "route", "outbound": "DIRECT"}
+    ],
+    "final": "Proxy"
+  }
+}

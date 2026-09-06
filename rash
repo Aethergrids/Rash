@@ -5,13 +5,13 @@ setopt pipe_fail
 
 typeset -gr SCRIPT_PATH="${0:A}"
 typeset -gr PROJECT_ROOT="${SCRIPT_PATH:h}"
-typeset -gr STATE_DIR="${CLRS_STATE_DIR:-${PROJECT_ROOT}/.clrs}"
+typeset -gr STATE_DIR="${RASH_STATE_DIR:-${PROJECT_ROOT}/.rash}"
 typeset -gr STATE_FILE="${STATE_DIR}/state"
 typeset -gr SECRET_FILE="${STATE_DIR}/controller-secret"
 typeset -gr SYSTEM_PROXY_STATE_FILE="${STATE_DIR}/system-proxy-state"
 typeset -gr USER_SOCKET="${STATE_DIR}/tmux.sock"
-typeset -gr SESSION_NAME="clrs"
-typeset -gr SESSION_RUNNER="${PROJECT_ROOT}/scripts/clrs-session.zsh"
+typeset -gr SESSION_NAME="rash"
+typeset -gr SESSION_RUNNER="${PROJECT_ROOT}/scripts/rash-session.zsh"
 typeset -gr YACD_DIR="${PROJECT_ROOT}/assets/yacd-meta"
 typeset -gr COUNTRY_MMDB="${PROJECT_ROOT}/assets/geoip/Country.mmdb"
 typeset -gr UI_URL="http://127.0.0.1:9090/ui/"
@@ -25,16 +25,21 @@ else
 fi
 typeset -gr CLASH_BIN="${CLASH_BIN:-$default_clash_bin}"
 unset default_clash_bin
+typeset -gr SING_BOX_BIN="${SING_BOX_BIN:-${commands[sing-box]:-}}"
 typeset -gr TMUX_BIN="${TMUX_BIN:-${commands[tmux]:-}}"
 typeset -gr YQ_BIN="${YQ_BIN:-${commands[yq]:-}}"
 typeset -gr CURL_BIN="${CURL_BIN:-${commands[curl]:-/usr/bin/curl}}"
 typeset -gr LSOF_BIN="${LSOF_BIN:-${commands[lsof]:-/usr/sbin/lsof}}"
 typeset -gr OPENSSL_BIN="${OPENSSL_BIN:-${commands[openssl]:-/usr/bin/openssl}}"
-typeset -gr OPEN_BIN="${OPEN_BIN:-${commands[open]:-/usr/bin/open}}"
+typeset default_open_command="xdg-open"
+[[ "$(uname -s)" == "Darwin" ]] && default_open_command="open"
+typeset -gr OPEN_BIN="${OPEN_BIN:-${commands[$default_open_command]:-}}"
+unset default_open_command
 typeset -gr NETWORKSETUP_BIN="${NETWORKSETUP_BIN:-${commands[networksetup]:-/usr/sbin/networksetup}}"
 typeset -gr SCUTIL_BIN="${SCUTIL_BIN:-${commands[scutil]:-/usr/sbin/scutil}}"
 
 typeset ACTIVE_PROFILE=""
+typeset ACTIVE_CLIENT=""
 typeset PROXY_SERVICE=""
 typeset PREVIOUS_HTTP_ENABLED=""
 typeset PREVIOUS_HTTP_SERVER=""
@@ -46,32 +51,33 @@ typeset PREVIOUS_HTTPS_PORT=""
 usage() {
   cat <<'EOF'
 Usage:
-  clrs start --config SG [--select] [--system-proxy]
-  clrs stop
-  clrs status
-  clrs select
-  clrs system-proxy on [--service NAME]
-  clrs system-proxy off
-  clrs system-proxy status
-  clrs attach
-  clrs logs
-  clrs ui
-  clrs env [--unset]
-  clrs exec [--] COMMAND [ARG ...]
-  clrs secret
+  rash start --config SG [--client clash-rs|sing-box] [--select] [--system-proxy]
+  rash stop
+  rash status
+  rash select
+  rash system-proxy on [--service NAME]
+  rash system-proxy off
+  rash system-proxy status
+  rash attach
+  rash logs
+  rash ui
+  rash env [--unset]
+  rash exec [--] COMMAND [ARG ...]
+  rash secret
 
 Examples:
-  clrs start --config SG
-  clrs start --config SG --select --system-proxy
-  clrs exec -- git pull
-  eval "$(clrs env)"
+  rash start --config SG
+  rash start --config SG --client sing-box
+  rash start --config SG --select --system-proxy
+  rash exec -- git pull
+  eval "$(rash env)"
 
-Detach from tmux without stopping Clash RS: Ctrl-b, then d
+Detach from tmux without stopping the client: Ctrl-b, then d
 EOF
 }
 
 die() {
-  print -u2 -r -- "clrs: $*"
+  print -u2 -r -- "rash: $*"
   exit 1
 }
 
@@ -83,16 +89,41 @@ require_executable() {
 }
 
 ensure_dependencies() {
-  require_executable "$CLASH_BIN" "Clash RS"
+  local client="$1"
+  require_executable "$(client_binary "$client")" "$client (run scripts/download-assets.zsh --only $client)"
   require_executable "$TMUX_BIN" "tmux"
   require_executable "$YQ_BIN" "yq v4"
   require_executable "$CURL_BIN" "curl"
   require_executable "$OPENSSL_BIN" "openssl"
-  require_executable "$SESSION_RUNNER" "clrs session runner"
+  require_executable "$LSOF_BIN" "lsof"
+  require_executable "$SESSION_RUNNER" "rash session runner"
   [[ -r "${YACD_DIR}/index.html" ]] || \
     die "Yacd-meta assets are missing; run scripts/download-assets.zsh --only yacd-meta"
-  [[ -r "$COUNTRY_MMDB" ]] || \
-    die "GeoIP assets are missing; run scripts/download-assets.zsh --only geoip"
+  if [[ "$client" == "clash-rs" ]]; then
+    [[ -r "$COUNTRY_MMDB" ]] || \
+      die "GeoIP assets are missing; run scripts/download-assets.zsh --only geoip"
+  fi
+}
+
+normalize_client() {
+  case "$1" in
+    clash-rs|sing-box) print -r -- "$1" ;;
+    *) die "--client must be clash-rs or sing-box" ;;
+  esac
+}
+
+client_binary() {
+  case "$1" in
+    clash-rs) print -r -- "$CLASH_BIN" ;;
+    sing-box) print -r -- "$SING_BOX_BIN" ;;
+  esac
+}
+
+config_filename() {
+  case "$1" in
+    clash-rs) print -r -- "config.yaml" ;;
+    sing-box) print -r -- "sing-box.json" ;;
+  esac
 }
 
 normalize_profile() {
@@ -104,15 +135,15 @@ normalize_profile() {
 }
 
 base_config_for() {
-  print -r -- "${PROJECT_ROOT}/configs/$1/config.yaml"
+  print -r -- "${PROJECT_ROOT}/configs/$1/$(config_filename "$2")"
 }
 
 runtime_dir_for() {
-  print -r -- "${STATE_DIR}/runtime/${1:l}-proxy"
+  print -r -- "${STATE_DIR}/runtime/${1:l}-$2"
 }
 
 runtime_config_for() {
-  print -r -- "$(runtime_dir_for "$1")/config.yaml"
+  print -r -- "$(runtime_dir_for "$1" "$2")/$(config_filename "$2")"
 }
 
 tmux_run() {
@@ -125,15 +156,15 @@ tmux_has_session() {
 
 read_state() {
   ACTIVE_PROFILE=""
-  local stored_mode=""
+  ACTIVE_CLIENT=""
   [[ -s "$STATE_FILE" ]] || return 1
-  IFS=: read -r ACTIVE_PROFILE stored_mode < "$STATE_FILE"
+  IFS=: read -r ACTIVE_PROFILE ACTIVE_CLIENT < "$STATE_FILE"
   [[ "$ACTIVE_PROFILE" == "SG" ]] || return 1
-  [[ "$stored_mode" == "proxy" ]] || return 1
+  [[ "$ACTIVE_CLIENT" == "clash-rs" || "$ACTIVE_CLIENT" == "sing-box" ]] || return 1
 }
 
 write_state() {
-  print -r -- "$1:proxy" >| "$STATE_FILE"
+  print -r -- "$1:$2" >| "$STATE_FILE"
   chmod 600 "$STATE_FILE"
 }
 
@@ -226,13 +257,13 @@ restore_system_proxy() {
 }
 
 system_proxy_on() {
-  local service="${CLRS_NETWORK_SERVICE:-Wi-Fi}"
+  local service="${RASH_NETWORK_SERVICE:-Wi-Fi}"
   local http_settings
   local https_settings
 
   if (( $# > 0 )); then
     [[ "$1" == "--service" && $# == 2 ]] || \
-      die "usage: clrs system-proxy on [--service NAME]"
+      die "usage: rash system-proxy on [--service NAME]"
     service="$2"
   fi
   require_active_session
@@ -271,7 +302,7 @@ system_proxy_on() {
 
   print -r -- "Rash system proxy: on ($service, 127.0.0.1:7890)"
   [[ "$(effective_proxy_port)" == "7890" ]] || \
-    print -u2 -r -- "clrs: another VPN or network extension is overriding it"
+    print -u2 -r -- "rash: another VPN or network extension is overriding it"
 }
 
 system_proxy_off() {
@@ -319,34 +350,42 @@ system_proxy_command() {
 
 render_runtime_config() {
   local profile="$1"
+  local client="$2"
   local base_config
   local runtime_dir
   local runtime_config
   local temporary_config
   local yq_filter
 
-  base_config="$(base_config_for "$profile")"
-  runtime_dir="$(runtime_dir_for "$profile")"
-  runtime_config="${runtime_dir}/config.yaml"
+  base_config="$(base_config_for "$profile" "$client")"
+  runtime_dir="$(runtime_dir_for "$profile" "$client")"
+  runtime_config="$(runtime_config_for "$profile" "$client")"
 
   [[ -r "$base_config" ]] || die "missing base config: $base_config"
   mkdir -p "$runtime_dir"
   chmod 700 "$runtime_dir"
 
-  temporary_config="$(mktemp "${runtime_dir}/config.yaml.XXXXXX")"
+  temporary_config="$(mktemp "${runtime_config}.XXXXXX")"
 
-  yq_filter='.mmdb = strenv(CLRS_MMDB_PATH) |
+  if [[ "$client" == "sing-box" ]]; then
+    RASH_SECRET_VALUE="$(<"$SECRET_FILE")" \
+    RASH_UI_DIR="$YACD_DIR" \
+      "$YQ_BIN" -p=json -o=json --from-file \
+        "${PROJECT_ROOT}/scripts/sing-box-runtime.yq" "$base_config" >| "$temporary_config"
+  else
+    yq_filter='.mmdb = strenv(RASH_MMDB_PATH) |
     .["external-controller"] = "127.0.0.1:9090" |
-    .["external-ui"] = strenv(CLRS_UI_DIR) |
+    .["external-ui"] = strenv(RASH_UI_DIR) |
     del(.["external-ui-url"]) |
     .profile["store-selected"] = true |
-    .secret = strenv(CLRS_SECRET_VALUE) |
+    .secret = strenv(RASH_SECRET_VALUE) |
     del(.tun)'
 
-  CLRS_SECRET_VALUE="$(<"$SECRET_FILE")" \
-  CLRS_UI_DIR="$YACD_DIR" \
-  CLRS_MMDB_PATH="$COUNTRY_MMDB" \
-    "$YQ_BIN" eval "$yq_filter" "$base_config" >| "$temporary_config"
+    RASH_SECRET_VALUE="$(<"$SECRET_FILE")" \
+    RASH_UI_DIR="$YACD_DIR" \
+    RASH_MMDB_PATH="$COUNTRY_MMDB" \
+      "$YQ_BIN" eval "$yq_filter" "$base_config" >| "$temporary_config"
+  fi
 
   chmod 600 "$temporary_config"
   mv -f "$temporary_config" "$runtime_config"
@@ -355,13 +394,18 @@ render_runtime_config() {
 
 validate_runtime_config() {
   local runtime_config="$1"
+  local client="$2"
   local runtime_dir="${runtime_config:h}"
 
-  "$CLASH_BIN" \
-    --directory "$runtime_dir" \
-    --config "$runtime_config" \
-    --test-config \
-    --strict-config
+  if [[ "$client" == "sing-box" ]]; then
+    "$SING_BOX_BIN" check --directory "$runtime_dir" --config "$runtime_config"
+  else
+    "$CLASH_BIN" \
+      --directory "$runtime_dir" \
+      --config "$runtime_config" \
+      --test-config \
+      --strict-config
+  fi
 }
 
 assert_ports_available() {
@@ -396,7 +440,7 @@ wait_for_api() {
     sleep 0.5
   done
 
-  print -u2 -r -- "clrs: Clash RS did not expose its controller within 30 seconds"
+  print -u2 -r -- "rash: client did not expose its controller within 30 seconds"
   capture_logs >&2
   return 1
 }
@@ -423,7 +467,7 @@ controller_get() {
 }
 
 url_encode() {
-  CLRS_URI_VALUE="$1" "$YQ_BIN" -n -r 'strenv(CLRS_URI_VALUE) | @uri' | \
+  RASH_URI_VALUE="$1" "$YQ_BIN" -n -r 'strenv(RASH_URI_VALUE) | @uri' | \
     /usr/bin/sed 's/+/\%20/g'
 }
 
@@ -511,11 +555,17 @@ proxy_member_detail() {
   proxy_type="$(PROXY_NAME="$proxy_name" print -r -- "$proxies_json" | \
     PROXY_NAME="$proxy_name" "$YQ_BIN" -p=json -r \
       '.proxies[strenv(PROXY_NAME)].type // "unknown"')"
-  runtime_config="$(runtime_config_for "$ACTIVE_PROFILE")"
+  runtime_config="$(runtime_config_for "$ACTIVE_PROFILE" "$ACTIVE_CLIENT")"
   if [[ -r "$runtime_config" ]]; then
-    server="$(PROXY_NAME="$proxy_name" "$YQ_BIN" -r \
-      '.proxies[] | select(.name == strenv(PROXY_NAME)) | .server // ""' \
-      "$runtime_config")"
+    if [[ "$ACTIVE_CLIENT" == "sing-box" ]]; then
+      server="$(PROXY_NAME="$proxy_name" "$YQ_BIN" -p=json -o=yaml -r \
+        '.outbounds[] | select(.tag == strenv(PROXY_NAME)) | .server // ""' \
+        "$runtime_config")"
+    else
+      server="$(PROXY_NAME="$proxy_name" "$YQ_BIN" -r \
+        '.proxies[] | select(.name == strenv(PROXY_NAME)) | .server // ""' \
+        "$runtime_config")"
+    fi
   fi
   if [[ -n "$server" ]]; then
     if [[ "$server" == *:* ]]; then
@@ -612,8 +662,8 @@ select_proxy_interactive() {
   choice="$(choose_index "Choose proxy" "$default_index" "${#members}")"
   member_name="${members[$choice]}"
   encoded_selector="$(url_encode "$selector_name")"
-  request_body="$(CLRS_SELECTED_PROXY="$member_name" "$YQ_BIN" -n -o=json \
-    '{"name": strenv(CLRS_SELECTED_PROXY)}')"
+  request_body="$(RASH_SELECTED_PROXY="$member_name" "$YQ_BIN" -n -o=json \
+    '{"name": strenv(RASH_SELECTED_PROXY)}')"
   "$CURL_BIN" --fail --silent --show-error --request PUT \
     --header "Authorization: Bearer $(<"$SECRET_FILE")" \
     --header 'Content-Type: application/json' \
@@ -628,6 +678,7 @@ select_proxy_interactive() {
 
 start_service() {
   local profile=""
+  local client="clash-rs"
   local prompt_for_selector="false"
   local enable_system_proxy="false"
   local runtime_config
@@ -643,6 +694,15 @@ start_service() {
         ;;
       --config=*)
         profile="$(normalize_profile "${1#*=}")"
+        shift
+        ;;
+      --client)
+        (( $# >= 2 )) || die "--client requires clash-rs or sing-box"
+        client="$(normalize_client "$2")"
+        shift 2
+        ;;
+      --client=*)
+        client="$(normalize_client "${1#*=}")"
         shift
         ;;
       --select)
@@ -666,40 +726,41 @@ start_service() {
     die "--select requires an interactive terminal"
   [[ "$enable_system_proxy" != "true" || "$(uname -s)" == "Darwin" ]] || \
     die "--system-proxy is only supported on macOS"
-  ensure_dependencies
+  ensure_dependencies "$client"
   prepare_state_dir
   prepare_secret
 
   if read_state && tmux_has_session; then
-    die "$ACTIVE_PROFILE is already running; run 'clrs stop' first"
+    die "$ACTIVE_PROFILE is already running; run 'rash stop' first"
   fi
 
   assert_ports_available
-  runtime_config="$(render_runtime_config "$profile")"
+  runtime_config="$(render_runtime_config "$profile" "$client")"
   runtime_dir="${runtime_config:h}"
 
   print -r -- "Validating ${profile} configuration..."
-  validate_runtime_config "$runtime_config"
+  validate_runtime_config "$runtime_config" "$client"
 
-  command_line="${(q)SESSION_RUNNER} ${(q)CLASH_BIN} ${(q)runtime_dir} ${(q)runtime_config}"
+  local client_bin="$(client_binary "$client")"
+  command_line="${(q)SESSION_RUNNER} ${(q)client} ${(q)client_bin} ${(q)runtime_dir} ${(q)runtime_config}"
   tmux_run new-session -d \
     -s "$SESSION_NAME" \
-    -n clash-rs \
+    -n "$client" \
     -c "$runtime_dir" \
     "$command_line"
-  write_state "$profile"
+  write_state "$profile" "$client"
 
   if ! wait_for_api; then
-    print -u2 -r -- "Use 'clrs attach' to inspect the preserved tmux session."
+    print -u2 -r -- "Use 'rash attach' to inspect the preserved tmux session."
     return 1
   fi
-  print -r -- "Clash RS started: profile=$profile"
+  print -r -- "Rash started: profile=$profile client=$client"
   print -r -- "Proxy: http://127.0.0.1:7890  (HTTP + SOCKS5)"
   print -r -- "Yacd:  $UI_URL"
-  print -r -- "Tmux:  clrs attach"
+  print -r -- "Tmux:  rash attach"
 
   if ! wait_for_ui; then
-    print -u2 -r -- "Yacd is still downloading; run 'clrs logs' or retry the UI shortly."
+    print -u2 -r -- "Yacd is not responding; run 'rash logs' or retry the UI shortly."
   fi
 
   if [[ "$prompt_for_selector" == "true" ]]; then
@@ -709,7 +770,7 @@ start_service() {
   fi
 
   if [[ "$enable_system_proxy" == "true" ]] && ! (system_proxy_command on); then
-    print -u2 -r -- "clrs: system proxy setup failed; stopping Clash RS"
+    print -u2 -r -- "rash: system proxy setup failed; stopping client"
     stop_service || true
     return 1
   fi
@@ -721,13 +782,13 @@ stop_service() {
   prepare_state_dir
   [[ -s "$SYSTEM_PROXY_STATE_FILE" ]] && system_proxy_off
   if ! read_state; then
-    print -r -- "Clash RS is not running."
+    print -r -- "Rash is not running."
     return 0
   fi
 
   if ! tmux_has_session; then
     clear_state
-    print -r -- "Clash RS is already stopped."
+    print -r -- "Rash is already stopped."
     return 0
   fi
 
@@ -740,23 +801,24 @@ stop_service() {
   done
 
   if tmux_has_session; then
-    print -u2 -r -- "clrs: graceful shutdown timed out; closing the tmux session"
+    print -u2 -r -- "rash: graceful shutdown timed out; closing the tmux session"
     tmux_run kill-session -t "$SESSION_NAME"
   fi
 
   clear_state
-  print -r -- "Clash RS stopped."
+  print -r -- "Rash stopped."
 }
 
 status_service() {
   prepare_state_dir
   if ! read_state || ! tmux_has_session; then
-    print -r -- "Clash RS: stopped"
+    print -r -- "Rash: stopped"
     return 1
   fi
 
-  print -r -- "Clash RS: running"
+  print -r -- "Rash: running"
   print -r -- "Profile:  $ACTIVE_PROFILE"
+  print -r -- "Client:   $ACTIVE_CLIENT"
   print -r -- "Proxy:    http://127.0.0.1:7890"
   print -r -- "Yacd:     $UI_URL"
   print -r -- "Session:  $SESSION_NAME"
@@ -765,7 +827,7 @@ status_service() {
 
 require_active_session() {
   prepare_state_dir
-  read_state || die "Clash RS is not running"
+  read_state || die "Rash is not running"
   tmux_has_session || die "the recorded tmux session is no longer running"
 }
 
@@ -781,19 +843,19 @@ show_logs() {
 
 open_ui() {
   require_active_session
-  require_executable "$OPEN_BIN" "macOS open"
+  require_executable "$OPEN_BIN" "browser opener (open on macOS, xdg-open on Linux)"
   "$OPEN_BIN" "$UI_URL"
-  print -r -- "If Yacd asks for the API secret, run: clrs secret"
+  print -r -- "If Yacd asks for the API secret, run: rash secret"
 }
 
 proxy_environment() {
   if [[ "${1:-}" == "--unset" ]]; then
-    (( $# == 1 )) || die "usage: clrs env [--unset]"
+    (( $# == 1 )) || die "usage: rash env [--unset]"
     print -r -- "unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY"
     print -r -- "unset http_proxy https_proxy all_proxy no_proxy"
     return 0
   fi
-  (( $# == 0 )) || die "usage: clrs env [--unset]"
+  (( $# == 0 )) || die "usage: rash env [--unset]"
   require_active_session
   print -r -- "export HTTP_PROXY=http://127.0.0.1:7890"
   print -r -- "export HTTPS_PROXY=http://127.0.0.1:7890"
@@ -810,7 +872,7 @@ proxy_exec() {
   if [[ "${1:-}" == "--" ]]; then
     shift
   fi
-  (( $# > 0 )) || die "usage: clrs exec [--] COMMAND [ARG ...]"
+  (( $# > 0 )) || die "usage: rash exec [--] COMMAND [ARG ...]"
   exec /usr/bin/env \
     HTTP_PROXY=http://127.0.0.1:7890 \
     HTTPS_PROXY=http://127.0.0.1:7890 \
@@ -833,6 +895,11 @@ main() {
   local command="${1:-help}"
   (( $# > 0 )) && shift
 
+  case "$(uname -s)" in
+    Darwin|Linux) ;;
+    *) die "only macOS and Linux are supported" ;;
+  esac
+
   case "$command" in
     start) start_service "$@" ;;
     stop) stop_service "$@" ;;
@@ -846,7 +913,7 @@ main() {
     exec) proxy_exec "$@" ;;
     secret) show_secret "$@" ;;
     help|-h|--help) usage ;;
-    *) die "unknown command: $command (run 'clrs help')" ;;
+    *) die "unknown command: $command (run 'rash help')" ;;
   esac
 }
 
